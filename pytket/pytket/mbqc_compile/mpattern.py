@@ -37,8 +37,9 @@ class MPattern:
         self.inputs = {}
         self.outputs = {}
         for qubit in c.qubits:
-            self.inputs[qubit.index] = qubit.index
-            self.outputs[qubit.index] = qubit.index
+            self.inputs[qubit.index[0]] = qubit.index[0]
+            self.outputs[qubit.index[0]] = qubit.index[0]
+        pass
     
     def single_conversion(self) -> None:
         """
@@ -50,6 +51,7 @@ class MPattern:
         #At this point we have the new qubit register, the CZ gates, and the
         #mapping for each input/output but we are missing the conditional
         #measurements.
+        pass
     
     def zx_convert(c: Circuit) -> pyzxCircuit:
         """
@@ -78,7 +80,7 @@ class MPattern:
         interior_clifford_simp(g, quiet=True)
         for q in range(self.qubits):
             self.inputs[q] = sorted(list(g.vertices()))[q]
-            self.outputs[q] = sorted(list(g.vertices()))[-q:]
+            self.outputs[q] = sorted(list(g.vertices()))[-self.qubits+q]
         self.remove_redundant(g)
         #The following code assumes that "g.copy()" will squash the vertex
         #labels and thus keeps track of the new input/output vertices. If
@@ -217,11 +219,12 @@ class MPattern:
                     g.outputs.remove(remove_vertex)
                     g.outputs.append(keep_vertex)
                     for o in self.outputs.keys():
-                        if self.outputs[i] == remove_vertex:
-                            self.outputs[i] = keep_vertex
+                        if self.outputs[o] == remove_vertex:
+                            self.outputs[o] = keep_vertex
                             break
                 g.set_type(keep_vertex, 0)
         self.identity_cleanup(g)
+        pass
 
     def identity_cleanup(self, g: Graph) -> None:
         """
@@ -241,6 +244,7 @@ class MPattern:
             g.remove_vertex(v)
         if len(v_list)>0:
             self.remove_redundant(g)
+        pass
             
     def split_subgraphs(g: Graph) -> list:
         """
@@ -304,7 +308,6 @@ class MPattern:
     #    layers =
     
     #This function needs to be reviewed for correctness
-    """
     def correct(g,produce_string=False):
         product = ""
         gf = gflow(g)
@@ -363,4 +366,3 @@ class MPattern:
                 if (str(key)[0] in "xz") and (len(S[key])>0):
                     clean_corrections[key]=S[key]
             return clean_corrections
-    """
