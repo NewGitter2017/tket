@@ -25,26 +25,31 @@ from pyzx.gflow import gflow as gflow
 
 class MPattern:
     """
-    A series of tools that allow circuits to be transformed into 
-    equivalent circuits representing measurement patterns.
-    """
-    def __init__(self):
-        pass
+    Class with tools to convert a pytket circuit into a new pytket circuit
+    with lower depth and higher width, by using MBQC techniques.
     
-    def single_conversion(c: Circuit) -> Circuit:
+    :param c:       A pytket circuit.
+    :param type:    Circuit
+    """
+    def __init__(self, c: Circuit) -> None:
+        self.c = c
+        self.qubits = len(c.qubits)
+        self.inputs = {}
+        self.outputs = {}
+        for qubit in c.qubits:
+            self.inputs[qubit.index] = qubit.index
+            self.outputs[qubit.index] = qubit.index
+    
+    def single_conversion(self) -> None:
         """
         Converts a tket circuit to another with reduced depth and higher width.
-        
-        :param c:       A pytket circuit.
-        :param type:    Circuit
-        
-        :returns:       A pytket circuit.
-        :rtype:         Circuit
         """
-        pyzxc = MPattern.zx_convert(c)
-        g = MPattern.zx_diagram(pyzxc)
+        pyzxc = MPattern.zx_convert(self.c)
+        g = self.zx_diagram(pyzxc)
         c2 = MPattern.entangle(g)
-        return c2
+        #At this point we have the new qubit register, the CZ gates, and the
+        #mapping for each input/output but we are missing the conditional
+        #measurements.
     
     def zx_convert(c: Circuit) -> pyzxCircuit:
         """
@@ -59,7 +64,7 @@ class MPattern:
         Transform.RebaseToPyZX().apply(c)
         return tk_to_pyzx(c)
     
-    def zx_diagram(pyzxc: pyzxCircuit) -> Graph:
+    def zx_diagram(self, pyzxc: pyzxCircuit) -> Graph:
         """
         Converts a pyzx circuit to a zx diagram.
         
@@ -71,7 +76,26 @@ class MPattern:
         """
         g = circuit_to_graph(pyzxc)
         interior_clifford_simp(g, quiet=True)
-        MPattern.remove_redundant(g)
+        for q in range(self.qubits):
+            self.inputs[q] = sorted(list(g.vertices()))[q]
+            self.outputs[q] = sorted(list(g.vertices()))[-q:]
+        self.remove_redundant(g)
+        #The following code assumes that "g.copy()" will squash the vertex
+        #labels and thus keeps track of the new input/output vertices. If
+        #pyzx is updated such that graph.copy() no longer changes vertex labels
+        #then comment out the remaining commands in this method, before
+        #'return'.
+        original_labels = sorted(list(g.vertices()))
+        for i in self.inputs.keys():
+            for v in range(len(original_labels)):
+                if self.inputs[i] == original_labels[v]:
+                    self.inputs[i] = v
+                    break
+        for o in self.outputs.keys():
+            for v in range(len(original_labels)):
+                if self.outputs[o] == original_labels[v]:
+                    self.outputs[o] = v
+                    break
         return g.copy()
     
     def entangle(g: Graph) -> Circuit:
@@ -134,7 +158,7 @@ class MPattern:
             vlist.reverse()
         return c
 
-    def remove_redundant(g: Graph) -> None:
+    def remove_redundant(self, g: Graph) -> None:
         """
         Removes simples edges from a zx diagram by merging the connected
         vertices.
@@ -185,13 +209,21 @@ class MPattern:
                 if removing_input:
                     g.inputs.remove(remove_vertex)
                     g.inputs.append(keep_vertex)
+                    for i in self.inputs.keys():
+                        if self.inputs[i] == remove_vertex:
+                            self.inputs[i] = keep_vertex
+                            break
                 else:
                     g.outputs.remove(remove_vertex)
                     g.outputs.append(keep_vertex)
+                    for o in self.outputs.keys():
+                        if self.outputs[i] == remove_vertex:
+                            self.outputs[i] = keep_vertex
+                            break
                 g.set_type(keep_vertex, 0)
-        MPattern.identity_cleanup(g)
+        self.identity_cleanup(g)
 
-    def identity_cleanup(g: Graph) -> None:
+    def identity_cleanup(self, g: Graph) -> None:
         """
         Removes identity vertices from a zx diagram if any exist.
         
@@ -208,7 +240,7 @@ class MPattern:
         for v in v_list:
             g.remove_vertex(v)
         if len(v_list)>0:
-            MPattern.remove_redundant(g)
+            self.remove_redundant(g)
             
     def split_subgraphs(g: Graph) -> list:
         """
@@ -270,3 +302,65 @@ class MPattern:
     #                clifford_layers -= 1
     #                break   
     #    layers =
+    
+    #This function needs to be reviewed for correctness
+    """
+    def correct(g,produce_string=False):
+        product = ""
+        gf = gflow(g)
+        if gflow == None:
+            print("Non-deterministic graph.")
+            return (None, None)
+        else:
+            l = layer_list(gf[0])
+            S = {}
+            for vo in l[0]:
+                S[("z"+str(vo))]=set()
+                S[("x"+str(vo))]=set()
+                S[("m"+str(vo))]=set()
+            for layer in l[1:]:
+                for v in layer:
+                    S[v]=set([v])
+                    #if g.phase(v) < 1:
+                    #    S[v]=set([v])
+                    #else:
+                    #    S[v]=set([True,v])
+            for cl in range(len(l)-1):
+                for i in l[-1-cl]:
+                    Gi = gf[1][i]
+                    A = Gi - set([i])
+                    B = set()
+                    Ngi = set()
+                    for gi in A:
+                        Ngi |= g.neighbors(gi)
+                    for u in Ngi:
+                        if len(g.neighbors(u) & (A-set([u])))%2:
+                            B |= set([u])
+                    for u in B:
+                        if not (u in l[0]):
+                            S[u] = (S[u]|S[i]) - (S[u]&S[i])
+                        else:
+                            zu = "z" + str(u)
+                            S[zu] = (S[zu]|S[i]) - (S[zu]&S[i])
+                            new = {(w,x) for w in S[i] for x in S["x"+str(u)]}
+                            mu = "m" + str(u)
+                            S[mu] = (S[mu]|new) - (S[mu]&new)
+                        if produce_string:
+                            print("Z(" + str(u) + "," + str(i) + ")")
+                            product = "Z(" + str(u) + "," + str(i) + ")" + product
+                    for u in A:
+                        if (u in l[0]):
+                            xu = "x" + str(u)
+                            S[xu] = (S[xu]|S[i]) - (S[xu]&S[i])
+                        elif g.phase(u) in {1/2, 3/2}:
+                            S[u] = (S[u]|S[i]) - (S[u]&S[i])
+                        if produce_string:
+                            print("X(" + str(u) + "," + str(i) + ")")
+                            print(u, g.neighbors(u))
+                            product = "X(" + str(u) + "," + str(i) + ")" + product
+            clean_corrections = {}
+            for key in S.keys():
+                if (str(key)[0] in "xz") and (len(S[key])>0):
+                    clean_corrections[key]=S[key]
+            return clean_corrections
+    """
