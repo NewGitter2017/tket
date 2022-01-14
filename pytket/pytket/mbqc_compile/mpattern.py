@@ -82,11 +82,21 @@ class MPattern:
             self.inputs[q] = sorted(list(g.vertices()))[q]
             self.outputs[q] = sorted(list(g.vertices()))[-self.qubits+q]
         self.remove_redundant(g)
-        #The following code assumes that "g.copy()" will squash the vertex
-        #labels and thus keeps track of the new input/output vertices. If
+        #We assume that g.copy() will squash the vertex
+        #labels and thus we keep track of the new input/output vertices. If
         #pyzx is updated such that graph.copy() no longer changes vertex labels
-        #then comment out the remaining commands in this method, before
-        #'return'.
+        #then comment out the next line (label_squish(g)).
+        self.label_squish(g)
+        return g.copy()
+    
+    def label_squish(self, g: Graph) -> None:
+        """
+        Updates the input/output labels of the MPattern to matched a squished
+        graph cause by g.copy().
+        
+        :param g:       A pyzx graph.
+        :param type:    Graph
+        """
         original_labels = sorted(list(g.vertices()))
         for i in self.inputs.keys():
             for v in range(len(original_labels)):
@@ -98,7 +108,6 @@ class MPattern:
                 if self.outputs[o] == original_labels[v]:
                     self.outputs[o] = v
                     break
-        return g.copy()
     
     def entangle(g: Graph) -> Circuit:
         """
@@ -246,7 +255,7 @@ class MPattern:
             self.remove_redundant(g)
         pass
             
-    def split_subgraphs(g: Graph) -> list:
+    def split_subgraphs(self, g: Graph) -> list:
         """
         If a zx diagram contains sub-diagrams which are not connected to each
         other, it splits them into multiple zx diagrams. It returns a list of
@@ -258,9 +267,12 @@ class MPattern:
         :returns:       A list of zx diagrams.
         :rtype:         list (of 'Graph' objects)
         """
-        g2 = g.copy()
+        #'label_squish()' is ran before 'g.copy()' to keep track of input/
+        #output qubit labels.
+        self.label_squish(g)
+        g1 = g.copy()
         cluster_list = []
-        for v in g2.vertices():
+        for v in g1.vertices():
             found = False
             for cluster in cluster_list:
                 if v in cluster:
@@ -271,7 +283,7 @@ class MPattern:
                 while True:
                     temp = set()
                     for v2 in new_nodes:
-                        temp |= set(g2.neighbors(v2))
+                        temp |= set(g1.neighbors(v2))
                     new_nodes = temp - new_set
                     if (len(new_nodes) == 0):
                         break
@@ -280,7 +292,7 @@ class MPattern:
         graph_list = []
         for cluster in range(len(cluster_list)):
             curr_cluster = cluster_list[cluster]
-            new_g = g2.copy()
+            new_g = g1.copy()
             new_vertices = set(new_g.vertices())
             for v in new_vertices:
                 if not (v in curr_cluster):
