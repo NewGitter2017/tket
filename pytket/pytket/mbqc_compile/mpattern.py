@@ -425,7 +425,6 @@ class MPattern:
                 if len(l_list)>1:
                     new_c.add_barrier(list(g.vertices()),list(g.vertices()))
                 for v in l_list[0]:
-                    new_c.H(v)
                     zi = False
                     for val in S[v]["z"]:
                         if type(val)==bool:
@@ -440,18 +439,18 @@ class MPattern:
                             xi ^= new_c.bits[val]
                     if type(xi) == bool:
                         if xi:
-                            new_c.Z(v)
-                    else:
-                        new_c.Z(v, condition=xi)
-                    if type(zi) == bool:
-                        if zi:
                             new_c.X(v)
                     else:
-                        new_c.X(v, condition=zi)
+                        new_c.X(v, condition=xi)
+                    if type(zi) == bool:
+                        if zi:
+                            new_c.Z(v)
+                    else:
+                        new_c.Z(v, condition=zi)
                     if g.phase(v) == 1:
-                        new_c.X(v)
+                        new_c.Z(v)
                     elif(g.phase(v) == 0):
                         pass
                     else:
-                        new_c.Rx(-g.phase(v),v)
+                        new_c.Rz(-g.phase(v),v)
         return new_c
