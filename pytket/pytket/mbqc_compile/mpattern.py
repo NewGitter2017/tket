@@ -58,7 +58,7 @@ class MPattern:
         subs = self.split_subgraphs(g)
         c3 = MPattern.correct(subs)
         c2.add_circuit(c3,c3.qubits,c3.bits[:len(c3.qubits)])
-        return c3
+        return c2
     
     def zx_convert(c: Circuit) -> pyzxCircuit:
         """
@@ -174,7 +174,7 @@ class MPattern:
                     finished_edge_pool[v] = 0
             vlist = [x for _, x in sorted(zip(dlist, vlist))]
             vlist.reverse()
-            c.add_barrier(range(len(g.vertices())), range(len(g.vertices())))
+        c.add_barrier(range(len(g.vertices())), range(len(g.vertices())))
         return c
 
     def remove_redundant(self, g: Graph) -> None:
@@ -332,7 +332,7 @@ class MPattern:
             layer = layers[vertex]
             if layer > depth:
                 diff = layer - depth
-                layer_set += [set() for i in range(diff)]
+                new_list += [set() for i in range(diff)]
                 depth = layer
             new_list[layer] |= {vertex}
         return new_list
@@ -353,7 +353,7 @@ class MPattern:
         S = {}
         total_v = 0
         for g in glist:
-            total_v += len(g.vertice())
+            total_v += len(g.vertices())
             for v in g.vertices():
                 S[v] = {"x":set(),"z":set()}
         new_c = Circuit(total_v,total_v)
@@ -408,9 +408,19 @@ class MPattern:
                                     xi ^= val
                                 else:
                                     xi ^= new_c.bits[val]
-                            new_c.X(v, condition=zi)
-                            new_c.Rx(g.phase(v), v, condition=xi)
-                            new_c.Rx(-g.phase(v),v, condition=(xi^True))
+                            if type(zi) == bool:
+                                if zi:
+                                    new_c.X(v)
+                            else:
+                                new_c.X(v, condition=zi)
+                            if type(xi) == bool:
+                                if xi:
+                                    new_c.Rx(g.phase(v), v)
+                                else:        
+                                    new_c.Rx(-g.phase(v), v)
+                            else:
+                                new_c.Rx(g.phase(v), v, condition=xi)
+                                new_c.Rx(-g.phase(v),v, condition=(xi^True))
                             new_c.Measure(v,v)
                 if len(l_list)>1:
                     new_c.add_barrier(list(g.vertices()),list(g.vertices()))
@@ -428,7 +438,20 @@ class MPattern:
                             xi ^= val
                         else:
                             xi ^= new_c.bits[val]
-                    new_c.Z(v, condition=xi)
-                    new_c.X(v, condition=zi)
-                    new_c.Rx(-g.phase(v),v)
+                    if type(xi) == bool:
+                        if xi:
+                            new_c.Z(v)
+                    else:
+                        new_c.Z(v, condition=xi)
+                    if type(zi) == bool:
+                        if zi:
+                            new_c.X(v)
+                    else:
+                        new_c.X(v, condition=zi)
+                    if g.phase(v) == 1:
+                        new_c.X(v)
+                    elif(g.phase(v) == 0):
+                        pass
+                    else:
+                        new_c.Rx(-g.phase(v),v)
         return new_c

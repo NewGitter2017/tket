@@ -112,3 +112,13 @@ def test_entangle() -> None:
     c2 = MPattern.entangle(g1)
     assert len(c2.qubits) == 6
     assert len(c2.get_commands()) == 4
+    
+def test_single_conversion() -> None:
+    c1 = Circuit(4)
+    c1.H(0)
+    c1.CZ(3,2)
+    c1.H(3)
+    c1.CX(0,3)
+    mp1 = MPattern(c1)
+    c2 = mp1.single_conversion()
+    assert len(c2.bits) == 6
