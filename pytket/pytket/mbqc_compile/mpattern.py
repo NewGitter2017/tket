@@ -14,8 +14,8 @@
 
 from pytket.transform import Transform
 from pytket.circuit import Circuit as Circuit
-from pytket.pyzx import pyzx_to_tk
-from pytket.pyzx import tk_to_pyzx
+#from pytket.pyzx import pyzx_to_tk
+from pytket.extensions.pyzx import tk_to_pyzx
 from pyzx.simplify import interior_clifford_simp
 from pyzx.circuit import Circuit as pyzxCircuit
 from pyzx.graph.graph_s import GraphS as Graph
@@ -27,11 +27,12 @@ class MPattern:
     """
     Class with tools to convert a pytket circuit into a new pytket circuit
     with lower depth and higher width, by using MBQC techniques.
-    
-    :param c:       A pytket circuit.
-    :param type:    Circuit
     """
     def __init__(self, c: Circuit) -> None:
+        """
+        :param c:       A pytket circuit.
+        :param type:    Circuit
+        """
         self.c = c
         self.qubits = len(c.qubits)
         self.inputs = {}
@@ -41,9 +42,12 @@ class MPattern:
             self.outputs[qubit.index[0]] = qubit.index[0]
         pass
     
-    def single_conversion(self) -> None:
+    def single_conversion(self) -> Circuit:
         """
         Converts a tket circuit to another with reduced depth and higher width.
+        
+        :returns:       A pytket circuit.
+        :rtype:         Circuit
         """
         pyzxc = MPattern.zx_convert(self.c)
         g = self.zx_diagram(pyzxc)
@@ -51,7 +55,10 @@ class MPattern:
         #At this point we have the new qubit register, the CZ gates, and the
         #mapping for each input/output but we are missing the conditional
         #measurements.
-        pass
+        subs = self.split_subgraphs(g)
+        c3 = MPattern.correct(subs)
+        c2.add_circuit(c3,c3.qubits,c3.bits[:len(c3.qubits)])
+        return c3
     
     def zx_convert(c: Circuit) -> pyzxCircuit:
         """
@@ -120,7 +127,7 @@ class MPattern:
         :returns:       A pytket circuit.
         :rtype:         Circuit
         """
-        c = Circuit(len(g.vertices()))
+        c = Circuit(len(g.vertices()),len(g.vertices()))
         vlist = list(g.vertices())
         dlist = []
         for v in vlist:
@@ -167,6 +174,7 @@ class MPattern:
                     finished_edge_pool[v] = 0
             vlist = [x for _, x in sorted(zip(dlist, vlist))]
             vlist.reverse()
+            c.add_barrier(range(len(g.vertices())), range(len(g.vertices())))
         return c
 
     def remove_redundant(self, g: Graph) -> None:
@@ -246,7 +254,7 @@ class MPattern:
         for v in g.vertices():
             if (len(g.neighbors(v)) == 2) and (g.phase(v) == 0) and not (v in g.inputs+g.outputs):
                 v_list.append(v)
-                neigh = list(g.neighbors(v))
+                neigh = g.neighbors(v)
                 new_edge = (neigh[0],neigh[1])
                 g.add_edge(new_edge,1)
         for v in v_list:
@@ -304,77 +312,123 @@ class MPattern:
                     new_g.remove_vertex(v)
             graph_list.append(new_g)
         return graph_list
-    
-    #def correction_layers(glist: list) -> list:
-    #    for g in glist:
-    #    gf_layers = gflow(g)[0]
-    #    max_layer = 0
-    #    if len(gf_layers.values()) > 0:
-    #        max_layer = max(gf_layers.values())
-    #    clifford_layers = max_layer
-    #    for l in layer_list(gf_layers)[1:]:
-    #        for v in l:
-    #            if g.phase(v) not in {0,1/2,1,3/2}:
-    #                clifford_layers -= 1
-    #                break   
-    #    layers =
+   
+    def layer_list(layers: dict) -> list:
+        """
+        This method takes a dictionary which maps each vertex in a zx diagram
+        to a correction layer as input. It then produces a list of sets of 
+        vertices as output. The sets in the list represent the layers of
+        measurements for the diagram in ascending order.
+        
+        :param layers:  Dictionary mapping vertices to their correction layer.
+        :param type:    dict
+        
+        :returns:       A list of sets containing integers.
+        :rtype:         list (of integers)
+        """
+        new_list = []
+        depth = -1
+        for vertex in layers.keys():
+            layer = layers[vertex]
+            if layer > depth:
+                diff = layer - depth
+                layer_set += [set() for i in range(diff)]
+                depth = layer
+            new_list[layer] |= {vertex}
+        return new_list
     
     #This function needs to be reviewed for correctness
-    def correct(g,produce_string=False):
-        product = ""
-        gf = gflow(g)
-        if gflow == None:
-            print("Non-deterministic graph.")
-            return (None, None)
-        else:
-            l = layer_list(gf[0])
-            S = {}
-            for vo in l[0]:
-                S[("z"+str(vo))]=set()
-                S[("x"+str(vo))]=set()
-                S[("m"+str(vo))]=set()
-            for layer in l[1:]:
-                for v in layer:
-                    S[v]=set([v])
-                    #if g.phase(v) < 1:
-                    #    S[v]=set([v])
-                    #else:
-                    #    S[v]=set([True,v])
-            for cl in range(len(l)-1):
-                for i in l[-1-cl]:
-                    Gi = gf[1][i]
-                    A = Gi - set([i])
-                    B = set()
-                    Ngi = set()
-                    for gi in A:
-                        Ngi |= g.neighbors(gi)
-                    for u in Ngi:
-                        if len(g.neighbors(u) & (A-set([u])))%2:
-                            B |= set([u])
-                    for u in B:
-                        if not (u in l[0]):
-                            S[u] = (S[u]|S[i]) - (S[u]&S[i])
+    def correct(glist: list) -> Circuit:
+        """
+        This method takes a list of subgraphs as input and produces a circuit
+        of measurements and corrections which ensures that the underlying
+        graphs are implemented deterministically.
+        
+        :param glist:   A list of unconnected graphs.
+        :param type:    Graph
+        
+        :returns:       A circuit containing measurements and conditional gates.
+        :rtype:         Circuit
+        """
+        S = {}
+        total_v = 0
+        for g in glist:
+            total_v += len(g.vertice())
+            for v in g.vertices():
+                S[v] = {"x":set(),"z":set()}
+        new_c = Circuit(total_v,total_v)
+        for g in glist:
+            gf = gflow(g)
+            if gflow == None:
+                return None
+            else:
+                l_list = MPattern.layer_list(gf[0])
+                layer_num = len(l_list)
+                for corr_layer in range(layer_num-1):
+                    if corr_layer > 0:
+                        isClifford = True
+                        for v in l_list[-1-corr_layer]:
+                            if not (g.phase(v) in {0,1/2,1,3/2}):
+                                isClifford = False
+                                break
+                        if not isClifford:
+                            new_c.add_barrier(list(g.vertices()),list(g.vertices()))
+                    for v in l_list[-1-corr_layer]:
+                        my_result = {v}
+                        if g.phase(v) in {0,1/2,1,3/2}:
+                            my_result ^= S[v]["z"]
+                        if g.phase(v) in {1/2,1,3/2}:
+                            my_result ^= S[v]["x"]
+                        if g.phase(v) in {1/2,3/2}:
+                            my_result ^= {True}
+                        for u in (gf[1][v] - {v}):
+                            S[u]["x"] ^= my_result
+                        for u in g.vertices():
+                            Nu = set(g.neighbors(u))
+                            if (len(Nu & gf[1][v])%2) == 1:
+                                S[u]["z"] ^= my_result
+                        if g.phase(v) in {0,1}:
+                            new_c.H(v)
+                            new_c.Measure(v,v)
+                        elif(g.phase(v) in {1/2,3/2}):
+                            new_c.Rx(-g.phase(v),v)
+                            new_c.Measure(v,v)
                         else:
-                            zu = "z" + str(u)
-                            S[zu] = (S[zu]|S[i]) - (S[zu]&S[i])
-                            new = {(w,x) for w in S[i] for x in S["x"+str(u)]}
-                            mu = "m" + str(u)
-                            S[mu] = (S[mu]|new) - (S[mu]&new)
-                        if produce_string:
-                            print("Z(" + str(u) + "," + str(i) + ")")
-                            product = "Z(" + str(u) + "," + str(i) + ")" + product
-                    for u in A:
-                        if (u in l[0]):
-                            xu = "x" + str(u)
-                            S[xu] = (S[xu]|S[i]) - (S[xu]&S[i])
-                        elif g.phase(u) in {1/2, 3/2}:
-                            S[u] = (S[u]|S[i]) - (S[u]&S[i])
-                        if produce_string:
-                            print("X(" + str(u) + "," + str(i) + ")")
-                            print(u, g.neighbors(u))
-                            product = "X(" + str(u) + "," + str(i) + ")" + product
-            clean_corrections = {}
-            for key in S.keys():
-                if (str(key)[0] in "xz") and (len(S[key])>0):
-                    clean_corrections[key]=S[key]
-            return clean_corrections
+                            new_c.H(v)
+                            #theta = zi-(((-1)**xi)*g.phase(v))
+                            zi = False
+                            for val in S[v]["z"]:
+                                if type(val)==bool:
+                                    zi ^= val
+                                else:
+                                    zi ^= new_c.bits[val]
+                            xi = False
+                            for val in S[v]["x"]:
+                                if type(val)==bool:
+                                    xi ^= val
+                                else:
+                                    xi ^= new_c.bits[val]
+                            new_c.X(v, condition=zi)
+                            new_c.Rx(g.phase(v), v, condition=xi)
+                            new_c.Rx(-g.phase(v),v, condition=(xi^True))
+                            new_c.Measure(v,v)
+                if len(l_list)>1:
+                    new_c.add_barrier(list(g.vertices()),list(g.vertices()))
+                for v in l_list[0]:
+                    new_c.H(v)
+                    zi = False
+                    for val in S[v]["z"]:
+                        if type(val)==bool:
+                            zi ^= val
+                        else:
+                            zi ^= new_c.bits[val]
+                    xi = False
+                    for val in S[v]["x"]:
+                        if type(val)==bool:
+                            xi ^= val
+                        else:
+                            xi ^= new_c.bits[val]
+                    new_c.Z(v, condition=xi)
+                    new_c.X(v, condition=zi)
+                    new_c.Rx(-g.phase(v),v)
+        return new_c
