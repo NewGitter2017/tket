@@ -21,6 +21,8 @@ from pyzx.circuit import Circuit as pyzxCircuit
 from pyzx.graph.graph_s import GraphS as Graph
 from pyzx.circuit.graphparser import circuit_to_graph
 from pyzx.gflow import gflow as gflow
+from pytket.routing import route
+from pytket.routing import Architecture
 #from typing import None
 
 class MPattern:
@@ -28,37 +30,47 @@ class MPattern:
     Class with tools to convert a pytket circuit into a new pytket circuit
     with lower depth and higher width, by using MBQC techniques.
     """
-    def __init__(self, c: Circuit) -> None:
+    def __init__(self, c: Circuit, arch: Architecture = None) -> None:
         """
         :param c:       A pytket circuit.
         :param type:    Circuit
+        
+        :param arch:    A pytket architecture.
+        :param type:    Architecture
         """
         self.c = c
         self.qubits = len(c.qubits)
         self.inputs = {}
         self.outputs = {}
+        self.arch = arch
         for qubit in c.qubits:
             self.inputs[qubit.index[0]] = qubit.index[0]
             self.outputs[qubit.index[0]] = qubit.index[0]
         pass
     
+    def set_architecture(self, arch: Architecture) -> None:
+        """
+        :param arch:    A pytket architecture.
+        :param type:    Architecture
+        """
+        self.arch = arch
+    
     def single_conversion(self) -> Circuit:
         """
         Converts a tket circuit to another with reduced depth and higher width.
         
-        :returns:       A pytket circuit.
-        :rtype:         Circuit
+        :returns:       A tuple containing the new circuit and the io map.
+        :rtype:         tuple
         """
         pyzxc = MPattern.zx_convert(self.c)
-        g = self.zx_diagram(pyzxc)
+        (g,io_map) = self.zx_diagram(pyzxc)
+        subs = self.split_subgraphs(g,io_map)
         c2 = MPattern.entangle(g)
-        #At this point we have the new qubit register, the CZ gates, and the
-        #mapping for each input/output but we are missing the conditional
-        #measurements.
-        subs = self.split_subgraphs(g)
+        #Figure out how to add self.route_circ(c2) here and how it's going to
+        #affect the next command. Also how to keep track of mapping.
         c3 = MPattern.correct(subs)
         c2.add_circuit(c3,c3.qubits,c3.bits[:len(c3.qubits)])
-        return c2
+        return (c2, io_map)
     
     def zx_convert(c: Circuit) -> pyzxCircuit:
         """
@@ -80,40 +92,46 @@ class MPattern:
         :param pyzxc:   A pyzx circuit.
         :param type:    pyzxCircuit
         
-        :returns:       A zx diagram.
-        :rtype:         Graph
+        :returns:       A tuple containing the zx diagram and new io maps.
+        :rtype:         tuple
         """
         g = circuit_to_graph(pyzxc)
         interior_clifford_simp(g, quiet=True)
+        new_inputs = self.inputs.copy()
+        new_outputs = self.outputs.copy()
+        io_map = {"i":new_inputs, "o":new_outputs}
         for q in range(self.qubits):
-            self.inputs[q] = sorted(list(g.vertices()))[q]
-            self.outputs[q] = sorted(list(g.vertices()))[-self.qubits+q]
-        self.remove_redundant(g)
+            io_map["i"][q] = sorted(list(g.vertices()))[q]
+            io_map["o"][q] = sorted(list(g.vertices()))[-self.qubits+q]
+        self.remove_redundant(g,io_map)
         #We assume that g.copy() will squash the vertex
         #labels and thus we keep track of the new input/output vertices. If
         #pyzx is updated such that graph.copy() no longer changes vertex labels
         #then comment out the next line (label_squish(g)).
-        self.label_squish(g)
-        return g.copy()
+        self.label_squish(g,io_map)
+        return (g.copy(),io_map)
     
-    def label_squish(self, g: Graph) -> None:
+    def label_squish(self, g: Graph, io_map: dict) -> None:
         """
         Updates the input/output labels of the MPattern to matched a squished
         graph cause by g.copy().
         
         :param g:       A pyzx graph.
         :param type:    Graph
+        
+        :param io_map:  A dictionary containing the current io mappings.
+        :param type:    dict
         """
         original_labels = sorted(list(g.vertices()))
-        for i in self.inputs.keys():
+        for i in io_map["i"].keys():
             for v in range(len(original_labels)):
-                if self.inputs[i] == original_labels[v]:
-                    self.inputs[i] = v
+                if io_map["i"][i] == original_labels[v]:
+                    io_map["i"][i] = v
                     break
-        for o in self.outputs.keys():
+        for o in io_map["o"].keys():
             for v in range(len(original_labels)):
-                if self.outputs[o] == original_labels[v]:
-                    self.outputs[o] = v
+                if io_map["o"][o] == original_labels[v]:
+                    io_map["o"][o] = v
                     break
     
     def entangle(g: Graph) -> Circuit:
@@ -176,14 +194,24 @@ class MPattern:
             vlist.reverse()
         c.add_barrier(range(len(g.vertices())), range(len(g.vertices())))
         return c
+    
+    def route_circ(self, c: Circuit) -> Circuit:
+        if not self.arch == None:
+            return route(c, self.arch)
+        #routedCirc.flatten_registers() Need to figure out why this was here.
+        else:
+            return c
 
-    def remove_redundant(self, g: Graph) -> None:
+    def remove_redundant(self, g: Graph, io_map: dict) -> None:
         """
         Removes simples edges from a zx diagram by merging the connected
         vertices.
         
         :param g:       A zx diagram.
         :param type:    Graph
+        
+        :param io_map:  A dictionary containing the current i/o mapping.
+        :param type:    dict
         """
         simple_edges = set()
         for edge in g.edge_set():
@@ -228,16 +256,16 @@ class MPattern:
                 if removing_input:
                     g.inputs.remove(remove_vertex)
                     g.inputs.append(keep_vertex)
-                    for i in self.inputs.keys():
-                        if self.inputs[i] == remove_vertex:
-                            self.inputs[i] = keep_vertex
+                    for i in io_map["i"].keys():
+                        if io_map["i"][i] == remove_vertex:
+                            io_map["i"][i] = keep_vertex
                             break
                 else:
                     g.outputs.remove(remove_vertex)
                     g.outputs.append(keep_vertex)
-                    for o in self.outputs.keys():
-                        if self.outputs[o] == remove_vertex:
-                            self.outputs[o] = keep_vertex
+                    for o in io_map["o"].keys():
+                        if io_map["o"][o] == remove_vertex:
+                            io_map["o"][o] = keep_vertex
                             break
                 g.set_type(keep_vertex, 0)
         self.identity_cleanup(g)
@@ -263,7 +291,7 @@ class MPattern:
             self.remove_redundant(g)
         pass
             
-    def split_subgraphs(self, g: Graph) -> list:
+    def split_subgraphs(self, g: Graph, io_map: dict) -> list:
         """
         If a zx diagram contains sub-diagrams which are not connected to each
         other, it splits them into multiple zx diagrams. It returns a list of
@@ -272,12 +300,15 @@ class MPattern:
         :param g:       A zx diagram.
         :param type:    Graph
         
+        :param io_map:  A dictionary containing the current i/o mapping.
+        :param type:    dict
+        
         :returns:       A list of zx diagrams.
         :rtype:         list (of 'Graph' objects)
         """
         #'label_squish()' is ran before 'g.copy()' to keep track of input/
         #output qubit labels.
-        self.label_squish(g)
+        self.label_squish(g, io_map)
         g1 = g.copy()
         cluster_list = []
         for v in g1.vertices():
@@ -364,6 +395,7 @@ class MPattern:
             else:
                 l_list = MPattern.layer_list(gf[0])
                 layer_num = len(l_list)
+                reset_list = []
                 for corr_layer in range(layer_num-1):
                     if corr_layer > 0:
                         isClifford = True
@@ -373,6 +405,10 @@ class MPattern:
                                 break
                         if not isClifford:
                             new_c.add_barrier(list(g.vertices()),list(g.vertices()))
+                        for v in reset_list:
+                            #Add command to reset qubit 'v'
+                            pass
+                        reset_list = []
                     for v in l_list[-1-corr_layer]:
                         my_result = {v}
                         if g.phase(v) in {0,1/2,1,3/2}:
@@ -389,10 +425,8 @@ class MPattern:
                                 S[u]["z"] ^= my_result
                         if g.phase(v) in {0,1}:
                             new_c.H(v)
-                            new_c.Measure(v,v)
                         elif(g.phase(v) in {1/2,3/2}):
                             new_c.Rx(-g.phase(v),v)
-                            new_c.Measure(v,v)
                         else:
                             new_c.H(v)
                             #theta = zi-(((-1)**xi)*g.phase(v))
@@ -421,9 +455,13 @@ class MPattern:
                             else:
                                 new_c.Rx(g.phase(v), v, condition=xi)
                                 new_c.Rx(-g.phase(v),v, condition=(xi^True))
-                            new_c.Measure(v,v)
+                        new_c.Measure(v,v)
+                        reset_list.append(v)
                 if len(l_list)>1:
                     new_c.add_barrier(list(g.vertices()),list(g.vertices()))
+                for v in reset_list:
+                    #Add command to reset qubit 'v'
+                    pass
                 for v in l_list[0]:
                     zi = False
                     for val in S[v]["z"]:
