@@ -14,28 +14,3 @@
 
 """Functions for splitting circuits to a variable number of subcircuits and 
 converting each to measurement based quantum computing."""
-
-#import numpy as np
-#import matplotlib.pyplot as plt
-#from matplotlib import patches, lines, path
-#import matplotlib
-#from pyzx.gflow import gflow as gflow
-#import pyzx as zx
-#import pytket
-#import pytket.pyzx
-#import random as rng
-#import math
-#from fractions import Fraction
-#from statistics import mean as mean
-#try:
-#    import cPickle as pickle
-#except ModuleNotFoundError:
-#    import pickle
-
-#from .circuit import Qubit, Circuit, OpType, fresh_symbol, PauliExpBox
-#from .utils import gen_term_sequence_circuit
-#from .utils import QubitPauliOperator
-#rom .transform import Transform, PauliSynthStrat, CXConfigType
-#from .pauli import Pauli
-    
-#from scipy.optimize import curve_fit

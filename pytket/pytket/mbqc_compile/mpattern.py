@@ -14,16 +14,14 @@
 
 from pytket.transform import Transform
 from pytket.circuit import Circuit as Circuit
-#from pytket.pyzx import pyzx_to_tk
 from pytket.extensions.pyzx import tk_to_pyzx
 from pyzx.simplify import interior_clifford_simp
 from pyzx.circuit import Circuit as pyzxCircuit
-from pyzx.graph.graph_s import GraphS as Graph
+from pyzx.graph.graph_s import GraphS as GraphS
 from pyzx.circuit.graphparser import circuit_to_graph
 from pyzx.gflow import gflow as gflow
 from pytket.routing import route
 from pytket.routing import Architecture
-#from typing import None
 
 class MPattern:
     """
@@ -32,97 +30,86 @@ class MPattern:
     """
     def __init__(self, c: Circuit, arch: Architecture = None) -> None:
         """
-        :param c:       A pytket circuit.
+        Initialises the MPattern object by giving it a pytket circuit and 
+        optionally a device architecture.
+        
+        :param c:       An arbitrary pytket circuit that we want converted to 
+                            a measurement pattern.
         :param type:    Circuit
         
-        :param arch:    A pytket architecture.
+        :param arch:    A pytket architecture that we want the measurement pattern to fit into.
         :param type:    Architecture
         """
         self.c = c
-        self.qubits = len(c.qubits)
-        self.inputs = {}
-        self.outputs = {}
         self.arch = arch
-        for qubit in c.qubits:
-            self.inputs[qubit.index[0]] = qubit.index[0]
-            self.outputs[qubit.index[0]] = qubit.index[0]
-        pass
     
     def set_architecture(self, arch: Architecture) -> None:
         """
-        :param arch:    A pytket architecture.
+        Method to change the device architecture of a measurement pattern.
+        
+        :param arch:    A new pytket architecture to fit the pattern onto.
         :param type:    Architecture
         """
         self.arch = arch
     
     def single_conversion(self) -> Circuit:
         """
-        Converts a tket circuit to another with reduced depth and higher width.
+        Converts a pytket circuit to another with reduced depth and higher width.
         
-        :returns:       A tuple containing the new circuit and the io map.
+        :returns:       A tuple containing the new circuit and the i/o map.
         :rtype:         tuple
         """
-        pyzxc = MPattern.zx_convert(self.c)
-        (g,io_map) = self.zx_diagram(pyzxc)
-        subs = self.split_subgraphs(g,io_map)
-        c2 = MPattern.entangle(g)
-        #Figure out how to add self.route_circ(c2) here and how it's going to
-        #affect the next command. Also how to keep track of mapping.
-        c3 = MPattern.correct(subs)
-        c2.add_circuit(c3,c3.qubits,c3.bits[:len(c3.qubits)])
-        return (c2, io_map)
+        (g,io_map) = self.zx_diagram() #Creates a simplified ZX diagram.
+        subs = self.split_subgraphs(g,io_map) #Returns list of disjoint subgraphs.
+        cz_circ = MPattern.entangle(g) #Creates the CZ circuit part of the pattern.
+        #Figure out how to add self.route_circ(cz_circuit) here and how it's
+        #going to affect the next command. Also how to keep track of mapping.
+        m_circ = MPattern.correct(subs) #Circuit implementing measurements/corrections.
+        cz_circ.add_circuit(m_circ,m_circ.qubits,m_circ.bits[:len(m_circ.qubits)])
+        return (cz_circ, io_map)
     
-    def zx_convert(c: Circuit) -> pyzxCircuit:
+    def zx_diagram(self) -> GraphS:
         """
-        Converts a tket circuit to a pyzx circuit.
+        Converts a pytket circuit to a zx diagram.
         
-        :param c:       A pytket circuit.
-        :param type:    Circuit
-        
-        :returns:       A pyzx circuit.
-        :rtype:         pyzxCircuit
-        """
-        Transform.RebaseToPyZX().apply(c)
-        return tk_to_pyzx(c)
-    
-    def zx_diagram(self, pyzxc: pyzxCircuit) -> Graph:
-        """
-        Converts a pyzx circuit to a zx diagram.
-        
-        :param pyzxc:   A pyzx circuit.
-        :param type:    pyzxCircuit
-        
-        :returns:       A tuple containing the zx diagram and new io maps.
+        :returns:       A tuple containing the zx diagram and new i/o maps.
         :rtype:         tuple
         """
-        g = circuit_to_graph(pyzxc)
-        interior_clifford_simp(g, quiet=True)
-        new_inputs = self.inputs.copy()
-        new_outputs = self.outputs.copy()
-        io_map = {"i":new_inputs, "o":new_outputs}
-        for q in range(self.qubits):
-            io_map["i"][q] = sorted(list(g.vertices()))[q]
-            io_map["o"][q] = sorted(list(g.vertices()))[-self.qubits+q]
-        self.remove_redundant(g,io_map)
+        rebased_c = self.c.copy() #Creates copy of original circuit on which we will work.
+        rebased_c.flatten_registers() #Pyzx can't handle pytket qubit labelling so we have to flatten the register.
+        Transform.RebaseToPyZX().apply(rebased_c) #Rebasing the gates into something pyzx can read.
+        pyzxc = tk_to_pyzx(rebased_c) #Convert to pyzx circuit.
+        g = circuit_to_graph(pyzxc) #Get graph (zx diagram) from pyzx circuit.
+        interior_clifford_simp(g, quiet=True) #Remove interior clifford spiders.
+        new_inputs = {}
+        new_outputs = {}
+        sorted_vertices = sorted(list(g.vertices()))
+        for q in range(self.c.n_qubits):
+            new_inputs[self.c.qubits[q]] = sorted_vertices[q]
+            new_outputs[self.c.qubits[q]] = sorted_vertices[q-self.c.n_qubits]
+        io_map = {"i":new_inputs, "o":new_outputs} #Keeps track of the vertices corresponding to the original inputs/outputs.
+        self.remove_redundant(g,io_map) #Removes the last few remaining simple edges in the diagram.
         #We assume that g.copy() will squash the vertex
         #labels and thus we keep track of the new input/output vertices. If
         #pyzx is updated such that graph.copy() no longer changes vertex labels
         #then comment out the next line (label_squish(g)).
-        self.label_squish(g,io_map)
+        self.label_squish(g,io_map) #Squishes the labels of the graph vertices to fill in empty vertex indices.
         return (g.copy(),io_map)
     
-    def label_squish(self, g: Graph, io_map: dict) -> None:
+    def label_squish(self, g: GraphS, io_map: dict) -> None:
         """
         Updates the input/output labels of the MPattern to matched a squished
-        graph cause by g.copy().
+        graph caused by g.copy().
         
-        :param g:       A pyzx graph.
-        :param type:    Graph
+        :param g:       A pyzx graph representing a zx diagram.
+        :param type:    GraphS
         
-        :param io_map:  A dictionary containing the current io mappings.
+        :param io_map:  A dictionary containing the current i/o mappings.
         :param type:    dict
         """
-        original_labels = sorted(list(g.vertices()))
+        original_labels = sorted(list(g.vertices())) #Sort the original vertices in ascending order.
+        #The following code will update the i/o map with the new labels of the
+        #input/output qubits after the squish.
         for i in io_map["i"].keys():
             for v in range(len(original_labels)):
                 if io_map["i"][i] == original_labels[v]:
@@ -134,13 +121,14 @@ class MPattern:
                     io_map["o"][o] = v
                     break
     
-    def entangle(g: Graph) -> Circuit:
+    @staticmethod
+    def entangle(g: GraphS) -> Circuit:
         """
-        Creates a tket circuit which implements the edges of a zx diagram
+        Creates a pytket circuit which implements the edges of a zx diagram
         via CZ gates on pairs of qubits.
         
-        :param g:       A zx diagram.
-        :param type:    Graph
+        :param g:       A zx diagram the edges of which we want to implement.
+        :param type:    GraphS
         
         :returns:       A pytket circuit.
         :rtype:         Circuit
@@ -154,9 +142,7 @@ class MPattern:
         vlist.reverse()
         edge_pool = set(g.edge_set())
         finished_edge_pool = {}
-        doneround = {}
-        for v in vlist:
-            doneround[v] = False
+        doneround = {v: False for v in vlist}
         while len(edge_pool)>0:
             for vid in range(len(vlist)):
                 if not doneround[vlist[vid]]:
@@ -199,16 +185,20 @@ class MPattern:
         if not self.arch == None:
             return route(c, self.arch)
         #routedCirc.flatten_registers() Need to figure out why this was here.
+        #EDIT: I think it was here precisely because I couldn't feed routed
+        #pytket circuits back to pyzx without flattening the qubits. I'll 
+        #revise this entire method when I work on routing later, for now just
+        #ignore this.
         else:
             return c
 
-    def remove_redundant(self, g: Graph, io_map: dict) -> None:
+    def remove_redundant(self, g: GraphS, io_map: dict) -> None:
         """
         Removes simples edges from a zx diagram by merging the connected
         vertices.
         
-        :param g:       A zx diagram.
-        :param type:    Graph
+        :param g:       A zx diagram with some remaining simple edges we want to remove.
+        :param type:    GraphS
         
         :param io_map:  A dictionary containing the current i/o mapping.
         :param type:    dict
@@ -269,14 +259,13 @@ class MPattern:
                             break
                 g.set_type(keep_vertex, 0)
         self.identity_cleanup(g)
-        pass
 
-    def identity_cleanup(self, g: Graph) -> None:
+    def identity_cleanup(self, g: GraphS) -> None:
         """
         Removes identity vertices from a zx diagram if any exist.
         
-        :param g:       A zx diagram.
-        :param type:    Graph
+        :param g:       A zx diagram with a few possible remaining identity vertices.
+        :param type:    GraphS
         """
         v_list = []
         for v in g.vertices():
@@ -289,51 +278,50 @@ class MPattern:
             g.remove_vertex(v)
         if len(v_list)>0:
             self.remove_redundant(g)
-        pass
             
-    def split_subgraphs(self, g: Graph, io_map: dict) -> list:
+    def split_subgraphs(self, g: GraphS, io_map: dict) -> list:
         """
         If a zx diagram contains sub-diagrams which are not connected to each
         other, it splits them into multiple zx diagrams. It returns a list of
         all the irreducible zx diagrams contained by the original.
         
-        :param g:       A zx diagram.
-        :param type:    Graph
+        :param g:       A zx diagram which may contain disjointed sub-diagrams.
+        :param type:    GraphS
         
         :param io_map:  A dictionary containing the current i/o mapping.
         :param type:    dict
         
         :returns:       A list of zx diagrams.
-        :rtype:         list (of 'Graph' objects)
+        :rtype:         list (of 'GraphS' objects)
         """
         #'label_squish()' is ran before 'g.copy()' to keep track of input/
         #output qubit labels.
-        self.label_squish(g, io_map)
-        g1 = g.copy()
-        cluster_list = []
+        self.label_squish(g, io_map) #Must squish labels again because we are going to use graph.copy()
+        g1 = g.copy() #Create copy of the graph to work on.
+        cluster_list = [] #Will contain all the sets of interconnected vertices.
         for v in g1.vertices():
             found = False
             for cluster in cluster_list:
                 if v in cluster:
-                    found = True
-            if (not found):
-                new_set = set([v])
-                new_nodes = set([v])
+                    found = True #Adds a flag if the current vertex exists in any cluster.
+            if (not found): #If the current vertex isn't in a cluster, create new cluster.
+                new_set = set([v]) #Current state of new cluster.
+                new_nodes = set([v]) #The latest additions to the new cluster.
                 while True:
                     temp = set()
                     for v2 in new_nodes:
-                        temp |= set(g1.neighbors(v2))
-                    new_nodes = temp - new_set
-                    if (len(new_nodes) == 0):
+                        temp |= set(g1.neighbors(v2)) #Get neighbors of new additions.
+                    new_nodes = temp - new_set #If they have already been added to the cluster they are not new additions.
+                    if (len(new_nodes) == 0): #If there are no more neighbors not in the cluster then the cluster is complete.
                         break
-                    new_set |= new_nodes
-                cluster_list.append(new_set)
-        graph_list = []
-        for cluster in range(len(cluster_list)):
+                    new_set |= new_nodes #Add new additions to the cluster.
+                cluster_list.append(new_set) #Add new cluster to the list.
+        graph_list = [] #This is a list of all the disjoint subgraphs.
+        for cluster in range(len(cluster_list)): #We will extract one subgraph for each cluster.
             curr_cluster = cluster_list[cluster]
-            new_g = g1.copy()
+            new_g = g1.copy() #The subgraph can start as a copy of the full graph.
             new_vertices = set(new_g.vertices())
-            for v in new_vertices:
+            for v in new_vertices: #Remove each vertex not in the current cluster from the current subgraph.
                 if not (v in curr_cluster):
                     new_g.remove_edges(new_g.incident_edges(v))
                     if v in new_g.inputs:
@@ -341,7 +329,7 @@ class MPattern:
                     if v in new_g.outputs:
                         new_g.outputs.remove(v)
                     new_g.remove_vertex(v)
-            graph_list.append(new_g)
+            graph_list.append(new_g) #Add new subgraph to the list.
         return graph_list
    
     def layer_list(layers: dict) -> list:
@@ -368,7 +356,6 @@ class MPattern:
             new_list[layer] |= {vertex}
         return new_list
     
-    #This function needs to be reviewed for correctness
     def correct(glist: list) -> Circuit:
         """
         This method takes a list of subgraphs as input and produces a circuit
@@ -376,17 +363,17 @@ class MPattern:
         graphs are implemented deterministically.
         
         :param glist:   A list of unconnected graphs.
-        :param type:    Graph
+        :param type:    list (GraphS)
         
         :returns:       A circuit containing measurements and conditional gates.
         :rtype:         Circuit
         """
-        S = {}
+        signals = {}
         total_v = 0
         for g in glist:
             total_v += len(g.vertices())
             for v in g.vertices():
-                S[v] = {"x":set(),"z":set()}
+                signals[v] = {"x":set(),"z":set()}
         new_c = Circuit(total_v,total_v)
         for g in glist:
             gf = gflow(g)
@@ -412,17 +399,17 @@ class MPattern:
                     for v in l_list[-1-corr_layer]:
                         my_result = {v}
                         if g.phase(v) in {0,1/2,1,3/2}:
-                            my_result ^= S[v]["z"]
+                            my_result ^= signals[v]["z"]
                         if g.phase(v) in {1/2,1,3/2}:
-                            my_result ^= S[v]["x"]
+                            my_result ^= signals[v]["x"]
                         if g.phase(v) in {1/2,3/2}:
                             my_result ^= {True}
                         for u in (gf[1][v] - {v}):
-                            S[u]["x"] ^= my_result
+                            signals[u]["x"] ^= my_result
                         for u in g.vertices():
                             Nu = set(g.neighbors(u))
                             if (len(Nu & gf[1][v])%2) == 1:
-                                S[u]["z"] ^= my_result
+                                signals[u]["z"] ^= my_result
                         if g.phase(v) in {0,1}:
                             new_c.H(v)
                         elif(g.phase(v) in {1/2,3/2}):
@@ -431,13 +418,13 @@ class MPattern:
                             new_c.H(v)
                             #theta = zi-(((-1)**xi)*g.phase(v))
                             zi = False
-                            for val in S[v]["z"]:
+                            for val in signals[v]["z"]:
                                 if type(val)==bool:
                                     zi ^= val
                                 else:
                                     zi ^= new_c.bits[val]
                             xi = False
-                            for val in S[v]["x"]:
+                            for val in signals[v]["x"]:
                                 if type(val)==bool:
                                     xi ^= val
                                 else:
@@ -464,13 +451,13 @@ class MPattern:
                     pass
                 for v in l_list[0]:
                     zi = False
-                    for val in S[v]["z"]:
+                    for val in signals[v]["z"]:
                         if type(val)==bool:
                             zi ^= val
                         else:
                             zi ^= new_c.bits[val]
                     xi = False
-                    for val in S[v]["x"]:
+                    for val in signals[v]["x"]:
                         if type(val)==bool:
                             xi ^= val
                         else:
