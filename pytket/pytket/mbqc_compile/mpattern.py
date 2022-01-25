@@ -13,15 +13,16 @@
 # limitations under the License.
 
 from pytket.transform import Transform
-from pytket.circuit import Circuit as Circuit
+from pytket.circuit import Circuit, Command
 from pytket.extensions.pyzx import tk_to_pyzx
 from pyzx.simplify import interior_clifford_simp
 from pyzx.circuit import Circuit as pyzxCircuit
-from pyzx.graph.graph_s import GraphS as GraphS
+from pyzx.graph.graph_s import GraphS
 from pyzx.circuit.graphparser import circuit_to_graph
-from pyzx.gflow import gflow as gflow
+from pyzx.gflow import gflow
 from pytket.routing import route
 from pytket.routing import Architecture
+import math
 
 class MPattern:
     """
@@ -67,6 +68,101 @@ class MPattern:
         m_circ = MPattern.correct(subs) #Circuit implementing measurements/corrections.
         cz_circ.add_circuit(m_circ,m_circ.qubits,m_circ.bits[:len(m_circ.qubits)])
         return (cz_circ, io_map)
+    
+    def multi_conversion(self, n: int = 2, strategy: str = "Depth", ) -> Circuit:
+        depth_structure = self.depth_structure()
+        size = len(depth_structure)
+        if strategy == "Gates":
+            non_cliff = 0
+            for d in depth_structure:
+                for gate in d:
+                    if not MPattern.is_Clifford(gate):
+                        non_cliff += 1
+            size = non_cliff
+        slice_size = math.ceil(size/n)
+        done_depth = 0
+        output = []
+        if strategy == "Depth":
+            for curr in range(n):
+                finish_at = min(done_depth + slice_size,size)
+                subcircuit = Circuit()
+                for qubit in self.c.qubits:
+                    subcircuit.add_qubit(qubit)
+                for bit in self.c.bits:
+                    subcircuit.add_bit(bit)
+                for depth_list in depth_structure[done_depth,finish_at]:
+                    for gate in depth_list:
+                        subcircuit.add_gate(Op=gate.op, args=gate.args)
+                sub_pattern = MPattern(subcircuit)
+                output.append(sub_pattern.single_conversion())
+                if finish_at >= size:
+                    break
+                else:
+                    done_depth = finish_at
+        elif strategy == "Gates":
+            for curr in range(n):
+                ncliff_total = 0
+                added_depths = 0
+                stop_at_next_nClifford = False
+                stopped = False
+                for depth in depth_structure[done_depth:]:
+                    for gate in depth:
+                        if not MPattern.is_Clifford(gate):
+                            if stop_at_next_nClifford:
+                                stopped = True
+                                break
+                            else:
+                                ncliff_total += 1
+                    if stopped:
+                        break
+                    else:
+                        added_depths += 1
+                        if ncliff_total >= slice_size:
+                            stop_at_next_nClifford = True
+                subcircuit = Circuit()
+                for qubit in self.c.qubits:
+                    subcircuit.add_qubit(qubit)
+                for bit in self.c.bits:
+                    subcircuit.add_bit(bit)
+                for depth_list in depth_structure[done_depth:done_depth+added_depths]:
+                    for gate in depth_list:
+                        subcircuit.add_gate(Op=gate.op, args=gate.args)
+                sub_pattern = MPattern(subcircuit)
+                output.append(sub_pattern.single_conversion())
+                if done_depth+added_depths >= size:
+                    break
+                else:
+                    done_depth += added_depths
+        return output
+    
+    def is_Clifford(aGate: Command) -> bool:
+        if aGate.op.get_name() in {'Z','X','Y','H','S','V','Sdg','Vdg','SX','SXdg','CX','CY','CZ','CH','CV','CVdg','CSX','CSXdg','CCX','SWAP','CSWAP','noop','BRIDGE','Reset'}:
+            return True
+        elif aGate.op.get_name() in {'T','Tdg'}:
+            return False
+        elif aGate.op.get_name() in {'Rx','Rz','Ry','CRx','CRy','CRz'}:
+            if aGate.op.params[0] in {0,1/2,1,3/2,2}:
+                return True
+        else:
+            return False
+    
+    def depth_structure(self) -> list:
+        gates = self.c.get_commands()
+        qubits = self.c.qubits
+        depth = self.c.depth()
+        qn = self.c.n_qubits
+        current_frontiers = [0]*qn
+        depth_slices = [[] for d in range(depth)]
+        for gate in gates:
+            involved_qubits = gate.qubits
+            qubit_indices = []
+            for qubit in involved_qubits:
+                qubit_indices.append(qubits.index(qubit))
+            max_frontier = max([current_frontiers[qid] for qid in qubit_indices])
+            for qid in qubit_indices:
+                current_frontiers[qid] = max_frontier + 1
+            depth_slices[max_frontier].append(gate)
+        return depth_slices
     
     def zx_diagram(self) -> GraphS:
         """
@@ -142,16 +238,16 @@ class MPattern:
         vlist.reverse()
         edge_pool = set(g.edge_set())
         finished_edge_pool = {}
-        doneround = {v: False for v in vlist}
+        doneround = [False for v in vlist] #Which qubits have had CZ gates placed on them during this round of application.
         while len(edge_pool)>0:
             for vid in range(len(vlist)):
-                if not doneround[vlist[vid]]:
+                if not doneround[vid]:
                     for vid2 in range(vid+1,len(vlist)):
-                        if ((not doneround[vlist[vid]]) and (not doneround[vlist[vid2]])):
+                        if not doneround[vid2]:
                             if (((vlist[vid],vlist[vid2]) in edge_pool) or ((vlist[vid2],vlist[vid]) in edge_pool)):
                                 c.CZ(vlist[vid],vlist[vid2])
-                                doneround[vlist[vid]] = True
-                                doneround[vlist[vid2]] = True
+                                doneround[vid] = True
+                                doneround[vid2] = True
                                 edge_pool -= set([(vlist[vid],vlist[vid2])])
                                 edge_pool -= set([(vlist[vid2],vlist[vid])])
                                 if vlist[vid] in finished_edge_pool.keys():
@@ -167,8 +263,8 @@ class MPattern:
                             continue
                 else:
                     continue
-            for key in doneround.keys():
-                doneround[key] = False
+            for v in range(len(doneround)):
+                doneround[v] = False
             dlist = []
             for v in vlist:
                 if v in finished_edge_pool.keys():
