@@ -99,7 +99,6 @@ def test_single_conversion() -> None:
     assert len(c2.get_commands()[11].args) == 3
     assert len(c2.get_commands()[12].args) == 2
     assert len(c2.get_commands()[13].args) == 2
-    
     c = Circuit(0)
     qubits = [Qubit("a",0), Qubit("b",0), Qubit("b", 23), Qubit("a", 24), Qubit("c", 7), Qubit("d", 7)]
     for q in qubits:
@@ -126,3 +125,46 @@ def test_single_conversion() -> None:
     assert len(c_.get_commands()[25].args) == 2
     assert len(c_.get_commands()[26].args) == 3
     assert len(c_.get_commands()[44].args) == 2
+    
+def test_multi_conversion() -> None:
+    c1 = Circuit(4)
+    c1.H(0)
+    c1.CZ(0,1)
+    c1.T(2)
+    c1.X(1)
+    c1.CX(0,2)
+    c1.H(2)
+    c1.T(2)
+    c1.CZ(2,1)
+    c1.CX(1,0)
+    c1.T(0)
+    c1.T(1)
+    c1.CZ(0,2)
+    c1.CZ(1,3)
+    c1.T(0)
+    c1.T(2)
+    c1.T(3)
+    c1.X(1)
+    mp1 = MPattern(c1)
+    output = mp1.multi_conversion(n=2,strategy="Depth")
+    assert len(output) == 2
+    output = mp1.multi_conversion(n=3,strategy="Depth")
+    assert len(output) == 3
+    output = mp1.multi_conversion(n=4,strategy="Depth")
+    assert len(output) == 4
+    output = mp1.multi_conversion(n=5,strategy="Depth")
+    assert len(output) == 5
+    output = mp1.multi_conversion(n=6,strategy="Depth")
+    assert len(output) == 5
+    output = mp1.multi_conversion(n=2,strategy="Gates")
+    assert len(output) == 2
+    output = mp1.multi_conversion(n=3,strategy="Gates")
+    assert len(output) == 2
+    output = mp1.multi_conversion(n=4,strategy="Gates")
+    assert len(output) == 3
+    output = mp1.multi_conversion(n=5,strategy="Gates")
+    assert len(output) == 3
+    output = mp1.multi_conversion(n=6,strategy="Gates")
+    assert len(output) == 3
+    output = mp1.multi_conversion(n=7,strategy="Gates")
+    assert len(output) == 4

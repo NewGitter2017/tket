@@ -69,7 +69,27 @@ class MPattern:
         cz_circ.add_circuit(m_circ,m_circ.qubits,m_circ.bits[:len(m_circ.qubits)])
         return (cz_circ, io_map)
     
-    def multi_conversion(self, n: int = 2, strategy: str = "Depth", ) -> Circuit:
+    def multi_conversion(self, n: int = 2, strategy: str = "Depth", ) -> list:
+        #Currently 'strategy' takes a 'str' type parameter that is either "Depth"
+        #or "Gates". Might want to consider additional strategies and switch to
+        #an enum in the future.
+        """
+        Splits a pytket circuit into 'n' subcircuits, each subcircuit containing
+        either an approximately equal depth or an approximately equal number of
+        non-Clifford gates. Then converts each subcircuit to a measurement pattern,
+        extracts a new circuit from the measurement pattern, and ultimately
+        returns a list of tuples containing the new circuits and the dictionaries
+        mapping the inputs and outputs of the new circuits to the original.
+        
+        :param n:        Number of segments to attempt to split into (May return fewer).
+        :param type:     int
+        
+        :param strategy: Splitting strategy either by "Depth" or by "Gates".
+        :param type:     str
+        
+        :returns:        A list of tuples containing circuits and i/o maps.
+        :rtype:          list
+        """
         depth_structure = self.depth_structure()
         size = len(depth_structure)
         if strategy == "Gates":
@@ -90,10 +110,11 @@ class MPattern:
                     subcircuit.add_qubit(qubit)
                 for bit in self.c.bits:
                     subcircuit.add_bit(bit)
-                for depth_list in depth_structure[done_depth,finish_at]:
+                for depth_list in depth_structure[done_depth:finish_at]:
                     for gate in depth_list:
                         subcircuit.add_gate(Op=gate.op, args=gate.args)
                 sub_pattern = MPattern(subcircuit)
+                print(subcircuit.get_commands())
                 output.append(sub_pattern.single_conversion())
                 if finish_at >= size:
                     break
@@ -128,14 +149,25 @@ class MPattern:
                     for gate in depth_list:
                         subcircuit.add_gate(Op=gate.op, args=gate.args)
                 sub_pattern = MPattern(subcircuit)
+                print(subcircuit.get_commands())
                 output.append(sub_pattern.single_conversion())
-                if done_depth+added_depths >= size:
+                if done_depth+added_depths >= len(depth_structure):
                     break
                 else:
                     done_depth += added_depths
         return output
     
+    @staticmethod
     def is_Clifford(aGate: Command) -> bool:
+        """
+        Placeholder method which checks if a gate is Clifford or not.
+        
+        :param n:        Number of segments to attempt to split into (May return fewer).
+        :param type:     Command
+        
+        :returns:        The result of the check.
+        :rtype:          bool
+        """
         if aGate.op.get_name() in {'Z','X','Y','H','S','V','Sdg','Vdg','SX','SXdg','CX','CY','CZ','CH','CV','CVdg','CSX','CSXdg','CCX','SWAP','CSWAP','noop','BRIDGE','Reset'}:
             return True
         elif aGate.op.get_name() in {'T','Tdg'}:
@@ -147,6 +179,15 @@ class MPattern:
             return False
     
     def depth_structure(self) -> list:
+        """
+        Converts a pytket circuit to a list containing 'x' lists, each containing
+        'y' gates, where 'x' is the depth of the circuit and 'y' is the number
+        of gates acting in a given timestep. Essentially we split the circuit
+        into a list of 'timeslices'.
+        
+        :returns:       A list containing lists of gates.
+        :rtype:         list
+        """
         gates = self.c.get_commands()
         qubits = self.c.qubits
         depth = self.c.depth()
@@ -428,6 +469,7 @@ class MPattern:
             graph_list.append(new_g) #Add new subgraph to the list.
         return graph_list
    
+    @staticmethod
     def layer_list(layers: dict) -> list:
         """
         This method takes a dictionary which maps each vertex in a zx diagram
@@ -452,6 +494,7 @@ class MPattern:
             new_list[layer] |= {vertex}
         return new_list
     
+    @staticmethod
     def correct(glist: list) -> Circuit:
         """
         This method takes a list of subgraphs as input and produces a circuit
