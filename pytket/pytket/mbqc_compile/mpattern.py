@@ -12,46 +12,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pytket.mapping import MappingManager, LexiRouteRoutingMethod, get_token_swapping_network
 from pytket.transform import Transform
-from pytket.circuit import Circuit, Command
+from pytket.circuit import Circuit, Command, OpType, Bit, Qubit
 from pytket.extensions.pyzx import tk_to_pyzx
 from pyzx.simplify import interior_clifford_simp
-from pyzx.circuit import Circuit as pyzxCircuit
 from pyzx.graph.graph_s import GraphS
 from pyzx.circuit.graphparser import circuit_to_graph
 from pyzx.gflow import gflow
-from pytket.routing import route
-from pytket.routing import Architecture
+from pytket.architecture import Architecture, SquareGrid, FullyConnected
+from pytket.placement import place_with_map
 import math
+from pytket.passes import DefaultMappingPass, RoutingPass
+from pytket.predicates import CompilationUnit
+"""
+
+"""
 
 class MPattern:
     """
     Class with tools to convert a pytket circuit into a new pytket circuit
     with lower depth and higher width, by using MBQC techniques.
     """
-    def __init__(self, c: Circuit, arch: Architecture = None) -> None:
+    def __init__(self, c: Circuit) -> None:
         """
-        Initialises the MPattern object by giving it a pytket circuit and 
-        optionally a device architecture.
+        Initialises the MPattern object by giving it a pytket circuit.
         
         :param c:       An arbitrary pytket circuit that we want converted to 
                             a measurement pattern.
         :param type:    Circuit
-        
-        :param arch:    A pytket architecture that we want the measurement pattern to fit into.
-        :param type:    Architecture
         """
         self.c = c
-        self.arch = arch
-    
-    def set_architecture(self, arch: Architecture) -> None:
-        """
-        Method to change the device architecture of a measurement pattern.
-        
-        :param arch:    A new pytket architecture to fit the pattern onto.
-        :param type:    Architecture
-        """
-        self.arch = arch
     
     def single_conversion(self) -> Circuit:
         """
@@ -63,13 +54,11 @@ class MPattern:
         (g,io_map) = self.zx_diagram() #Creates a simplified ZX diagram.
         subs = self.split_subgraphs(g,io_map) #Returns list of disjoint subgraphs.
         cz_circ = MPattern.entangle(g) #Creates the CZ circuit part of the pattern.
-        #Figure out how to add self.route_circ(cz_circuit) here and how it's
-        #going to affect the next command. Also how to keep track of mapping.
         m_circ = MPattern.correct(subs) #Circuit implementing measurements/corrections.
-        cz_circ.add_circuit(m_circ,m_circ.qubits,m_circ.bits[:len(m_circ.qubits)])
+        cz_circ.add_circuit(m_circ,[])
         return (cz_circ, io_map)
     
-    def multi_conversion(self, n: int = 2, strategy: str = "Depth", ) -> list:
+    def multi_conversion(self, n: int = 1, strategy: str = "Gates", ) -> list:
         #Currently 'strategy' takes a 'str' type parameter that is either "Depth"
         #or "Gates". Might want to consider additional strategies and switch to
         #an enum in the future.
@@ -114,7 +103,6 @@ class MPattern:
                     for gate in depth_list:
                         subcircuit.add_gate(Op=gate.op, args=gate.args)
                 sub_pattern = MPattern(subcircuit)
-                print(subcircuit.get_commands())
                 output.append(sub_pattern.single_conversion())
                 if finish_at >= size:
                     break
@@ -149,7 +137,6 @@ class MPattern:
                     for gate in depth_list:
                         subcircuit.add_gate(Op=gate.op, args=gate.args)
                 sub_pattern = MPattern(subcircuit)
-                print(subcircuit.get_commands())
                 output.append(sub_pattern.single_conversion())
                 if done_depth+added_depths >= len(depth_structure):
                     break
@@ -157,6 +144,303 @@ class MPattern:
                     done_depth += added_depths
         return output
     
+    """
+    def routed_conversion(self, arch: Architecture, n: int = 1, splitStrat: str = "Gates", routeStrat: str = "Separate") -> list:
+        pattern_list = self.multi_conversion(n, splitStrat)
+        new_pattern_list = []
+        new_c = Circuit()
+        for q in arch.nodes:
+            new_c.add_qubit(q)
+        for pattern in pattern_list:
+            cu = CompilationUnit(pattern[0])
+            DefaultMappingPass(arch).apply(cu)
+            for k in pattern[1]["i"].keys():
+                pattern[1]["i"][k] = cu.initial_map[pattern[0].qubits[pattern[1]["i"][k]]]
+            for k in pattern[1]["o"].keys():
+                pattern[1]["o"][k] = cu.final_map[pattern[0].qubits[pattern[1]["o"][k]]]
+            segment_circuit = cu.circuit.copy()
+            print(segment_circuit.valid_connectivity(arch,False,True))
+            new_tuple = (segment_circuit,pattern[1])
+            new_pattern_list.append(new_tuple)
+            for q in arch.nodes:
+                if not q in segment_circuit.qubits:
+                    segment_circuit.add_qubit(q)
+            if len(new_pattern_list)>1:
+                previous_qubits = new_pattern_list[-2][1]["o"]
+                current_qubits = new_pattern_list[-1][1]["i"]
+                #print(new_c.valid_connectivity(arch,True))
+                for key in previous_qubits.keys():
+                    if not previous_qubits[key]==current_qubits[key]:
+                        new_c.SWAP(previous_qubits[key],current_qubits[key])
+            new_c.add_circuit(segment_circuit,[])
+        #print(new_c.valid_connectivity(arch,False))
+        final_cu = CompilationUnit(new_c)
+        DefaultMappingPass(arch).apply(final_cu)
+        final_map = {"i":new_pattern_list[0][1]["i"],"o":new_pattern_list[-1][1]["o"]}
+        #print(len(new_c.get_commands()),new_c.get_commands())
+        #print(len(final_cu.circuit.get_commands()),final_cu.circuit.get_commands())
+        #print(len(final_cu.circuit.get_commands()))
+        for k in final_map["i"].keys():
+            final_map["i"][k] = final_cu.initial_map[final_map["i"][k]]
+        for k in final_map["o"].keys():
+            final_map["o"][k] = final_cu.final_map[final_map["o"][k]]
+        #return new_pattern_list
+        return (final_cu.circuit,final_map)
+        """
+        
+    def unrouted_conversion(self, n: int = 1, splitStrat: str = "Gates") -> tuple:
+        pattern_list = self.multi_conversion(n, splitStrat)
+        new_c = Circuit()
+        prev_map = {}
+        for p in range(len(pattern_list)):
+            (curr_circ,curr_map) = pattern_list[p]
+            if len(prev_map)==0:
+                new_c.add_circuit(curr_circ,[])
+                prev_map = curr_map.copy()
+            else:
+                q_map = {}
+                for k in prev_map["o"].keys():
+                    q_map[curr_circ.qubits[curr_map["i"][k]]] = new_c.qubits[prev_map["o"][k]]
+                prev_ancillas = []
+                curr_ancillas = []
+                for q in new_c.qubits:
+                    if not q in list(q_map.values()):
+                        prev_ancillas.append(q)
+                for q in curr_circ.qubits:
+                    if not q in q_map.keys():
+                        curr_ancillas.append(q)
+                while len(prev_ancillas)>0 and len(curr_ancillas)>0:
+                    q_map[curr_ancillas.pop()]=prev_ancillas.pop()
+                if len(curr_ancillas)>0:
+                    unused_id_pool = []
+                    for q in curr_circ.qubits:
+                        if not q in list(q_map.values()):
+                            unused_id_pool.append(q)
+                    for q in curr_circ.qubits:
+                        if not q in q_map.keys():
+                            q_map[q] = unused_id_pool.pop()
+                for k in curr_map["o"].keys():
+                    curr_map["o"][k] = q_map[curr_circ.qubits[curr_map["o"][k]]]
+                curr_circ.rename_units(q_map)
+                new_c.add_circuit(curr_circ,[])
+                for k in curr_map["o"].keys():
+                    curr_map["o"][k] = new_c.qubits.index(curr_map["o"][k])
+                prev_map = curr_map.copy()
+        final_map = {"i":pattern_list[0][1]["i"],"o":prev_map["o"]}
+        for io in final_map.keys():
+            for q in final_map[io].keys():
+                final_map[io][q] = new_c.qubits[final_map[io][q]]
+        return (new_c,final_map)
+    
+    def routed_conversion(self, arch: Architecture = None, n: int = 1, splitStrat: str = "Gates", routeStrat: str = "Separate") -> tuple:
+        if (type(arch)==type(FullyConnected(0))) or (arch == None):
+            return self.unrouted_conversion(n,splitStrat)
+        else:
+            pattern_list = self.multi_conversion(n, splitStrat)
+            new_c = Circuit()
+            for q in arch.nodes:
+                new_c.add_qubit(q)
+            for p in range(len(pattern_list)):
+                print("________________________________________________________")
+                print("SEGMENT ", str(p), " :")
+                print("________________________________________________________")
+                print("Map:")
+                print(pattern_list[p][1])
+                print("Unrouted circuit:")
+                print(pattern_list[p][0].get_commands())
+                (curr_circ,curr_map) = pattern_list[p]
+                if p>0:
+                    (prev_circ,prev_map) = pattern_list[p-1]
+                    route_map = {}
+                    for k in curr_map["i"].keys():
+                        route_map[curr_circ.qubits[curr_map["i"][k]]]=prev_map["o"][k]
+                        curr_map["i"][k] = prev_map["o"][k]
+                    output_list = [curr_circ.qubits[q] for q in list(curr_map["o"].values())]
+                    already_placed = 0
+                    unplaced_qubit_map = {}
+                    for q in range(curr_circ.n_qubits):
+                        if curr_circ.qubits[q] in output_list:
+                            if curr_circ.qubits[q] in route_map.keys():
+                                already_placed += 1
+                                for k in curr_map["o"].keys():
+                                    if type(curr_map["o"][k])==int:
+                                        if curr_map["o"][k]==q:
+                                            curr_map["o"][k]=route_map[curr_circ.qubits[q]]
+                                            break
+                            else:
+                                for k in curr_map["o"].keys():
+                                    if type(curr_map["o"][k])==int:
+                                        if curr_map["o"][k]==q:
+                                            unplaced_qubit_map[k] = len(route_map.keys()) + q - already_placed
+                                            break
+                        elif curr_circ.qubits[q] in route_map.keys():
+                            already_placed += 1
+                    place_with_map(curr_circ,route_map)
+                    for unplaced_qubit in unplaced_qubit_map.keys():
+                        curr_map["o"][unplaced_qubit]=curr_circ.qubits[unplaced_qubit_map[unplaced_qubit]]  
+                else:
+                    for i in curr_map["i"].keys():
+                        curr_map["i"][i] = curr_circ.qubits[curr_map["i"][i]]
+                    for o in curr_map["o"].keys():
+                        curr_map["o"][o] = curr_circ.qubits[curr_map["o"][o]]
+                #for k in curr_map["i"].keys():
+                #    temp = Bit(name="i" + str(k))
+                #    curr_circ.add_bit(temp)
+                #    curr_circ.add_barrier(units = [curr_map["i"][k], temp])
+                #for k in curr_map["o"].keys():
+                #    temp = Bit(name="o" + str(k))
+                #    curr_circ.add_bit(temp)
+                #    curr_circ.add_barrier(units = [curr_map["o"][k], temp])
+                #mm = MappingManager(arch)
+                #routed_c = mm.route_circuit(curr_circ, [LexiRouteRoutingMethod()])
+                #routed_c = route(curr_circ,arch)
+                #for q in routed_c.qubits:
+                #    print(q,type(q))
+                #barriers = routed_c.commands_of_type(OpType.Barrier)
+                #for k in curr_map["i"].keys():
+                #    for b in barriers:
+                #        if len(b.bits) == 1 and b.bits[0].reg_name == "i" + str(k):
+                #            curr_map["i"][k] = b.qubits[0]
+                #            print("a barrier", b)
+                #            break
+                #for k in curr_map["o"].keys():
+                #    for b in barriers:
+                #        if len(b.bits) == 1 and b.bits[0].reg_name == "o" + str(k):
+                #            curr_map["o"][k] = b.qubits[0]
+                #            break
+                #permutation = {x:x for x in routed_c.qubits}
+                #for com in routed_c.commands_of_type(OpType.SWAP):
+                #    permutation[com.qubits[0]] = com.qubits[1]
+                #    permutation[com.qubits[1]] = com.qubits[0]
+                #for k in curr_map["i"].keys():
+                #    curr_map["i"][k] = permutation[curr_map["i"][k]]
+                #print("Routed circuit:")
+                #print(routed_c.get_commands())
+                #print("Map:")
+                #print(curr_map)
+                
+                #print("PERMUTATION:")
+                #print(permutation)
+                #print(routed_c.get_commands())
+                #return(curr_circ,arch)
+                cu = CompilationUnit(curr_circ)
+                #DefaultMappingPass(arch).apply(cu)
+                RoutingPass(arch).apply(cu)
+                #if p==1:
+                    #print("-------HERE")
+                    #print(cu.initial_map)
+                    #print("------END HERE")    
+                #for k in curr_map["i"].keys():
+                #    curr_map["i"][k] = cu.initial_map[curr_map["i"][k]]
+                #for k in curr_map["o"].keys():
+                #    curr_map["o"][k] = cu.final_map[curr_map["o"][k]]
+                #if p==1:
+                    #print("Partially mapped circuit qubits:")
+                    #print(curr_circ.qubits)
+                    #print("Partially mapped circuit:")
+                    #print(curr_circ.get_commands())
+                    #print("Routed circuit:")
+                    #print(route(curr_circ,arch).get_commands())
+                    #print("Map:")
+                    #print(curr_map)
+                #if p==0:
+                    #print("Routed circuit:")
+                    #print(cu.circuit.get_commands())
+                    #print("Map:")
+                    #print(curr_map)
+                new_tuple = (cu.circuit,curr_map)
+                #new_tuple = (routed_c,curr_map)
+                pattern_list[p] = new_tuple
+                segment_circuit = cu.circuit.copy()
+                for q in arch.nodes:
+                    if not q in segment_circuit.qubits:
+                        segment_circuit.add_qubit(q)
+                new_c.add_circuit(segment_circuit,[])
+            final_map = {"i":pattern_list[0][1]["i"],"o":pattern_list[-1][1]["o"]}
+            return (new_c,final_map)
+        
+        def routed_conversion_separate(self, pattern_list: list, arch: Architecture = None) -> tuple:
+            new_c = Circuit()
+            for q in arch.nodes:
+                new_c.add_qubit(q)
+            for p in range(len(pattern_list)):
+                (curr_circ,curr_map) = pattern_list[p]
+                cu = CompilationUnit(curr_circ)
+                DefaultMappingPass(arch).apply(cu)
+                for k in curr_map["i"].keys():
+                    curr_map["i"][k] = cu.initial_map[curr_circ.qubits[curr_map["i"][k]]]
+                for k in curr_map["o"].keys():
+                    curr_map["o"][k] = cu.final_map[curr_circ.qubits[curr_map["o"][k]]]
+                new_tuple = (cu.circuit,curr_map)
+                pattern_list[p] = new_tuple
+                segment_circuit = cu.circuit.copy() 
+                for q in arch.nodes:
+                    if not q in segment_circuit.qubits:
+                        segment_circuit.add_qubit(q)
+                if p>0:
+                    prev_map = pattern_list[p-1][1]
+                    matching_dict = {}
+                    for k in curr_map["i"].keys():
+                        matching_dict[prev_map["o"][k]]=curr_map["i"][k]
+                    swaps_as_pairs = get_token_swapping_network(arch, matching_dict)
+                    for pair in swaps_as_pairs:
+                        new_c.SWAP(new_c.qubits.index(pair[0]),new_c.qubits.index(pair[1]))                
+                new_c.add_circuit(segment_circuit,[])
+            final_map = {"i":pattern_list[0][1]["i"],"o":pattern_list[-1][1]["o"]}
+            return (new_c,final_map)
+        
+        def routed_conversion_sequential(self, pattern_list: list, arch: Architecture = None) -> tuple:
+            new_c = Circuit()
+            for q in arch.nodes:
+                new_c.add_qubit(q)
+            for p in range(len(pattern_list)):
+                (curr_circ,curr_map) = pattern_list[p]
+                if p>0:
+                    (prev_circ,prev_map) = pattern_list[p-1]
+                    route_map = {}
+                    for k in curr_map["i"].keys():
+                        route_map[curr_circ.qubits[curr_map["i"][k]]]=prev_map["o"][k]
+                        curr_map["i"][k] = prev_map["o"][k]
+                    output_list = [curr_circ.qubits[q] for q in list(curr_map["o"].values())]
+                    already_placed = 0
+                    unplaced_qubit_map = {}
+                    for q in range(curr_circ.n_qubits):
+                        if curr_circ.qubits[q] in output_list:
+                            if curr_circ.qubits[q] in route_map.keys():
+                                already_placed += 1
+                                for k in curr_map["o"].keys():
+                                    if type(curr_map["o"][k])==int:
+                                        if curr_map["o"][k]==q:
+                                            curr_map["o"][k]=route_map[curr_circ.qubits[q]]
+                                            break
+                            else:
+                                for k in curr_map["o"].keys():
+                                    if type(curr_map["o"][k])==int:
+                                        if curr_map["o"][k]==q:
+                                            unplaced_qubit_map[k] = len(route_map.keys()) + q - already_placed
+                                            break
+                        elif curr_circ.qubits[q] in route_map.keys():
+                            already_placed += 1
+                    place_with_map(curr_circ,route_map)
+                    for unplaced_qubit in unplaced_qubit_map.keys():
+                        curr_map["o"][unplaced_qubit]=curr_circ.qubits[unplaced_qubit_map[unplaced_qubit]]  
+                else:
+                    for i in curr_map["i"].keys():
+                        curr_map["i"][i] = curr_circ.qubits[curr_map["i"][i]]
+                    for o in curr_map["o"].keys():
+                        curr_map["o"][o] = curr_circ.qubits[curr_map["o"][o]]
+                cu = CompilationUnit(curr_circ)
+                DefaultMappingPass(arch).apply(cu)
+                new_tuple = (cu.circuit,curr_map)
+                pattern_list[p] = new_tuple
+                segment_circuit = cu.circuit.copy()
+                for q in arch.nodes:
+                    if not q in segment_circuit.qubits:
+                        segment_circuit.add_qubit(q)
+                new_c.add_circuit(segment_circuit,[])
+            final_map = {"i":pattern_list[0][1]["i"],"o":pattern_list[-1][1]["o"]}
+            return (new_c,final_map)
+        
     @staticmethod
     def is_Clifford(aGate: Command) -> bool:
         """
@@ -317,17 +601,6 @@ class MPattern:
             vlist.reverse()
         c.add_barrier(range(len(g.vertices())), range(len(g.vertices())))
         return c
-    
-    def route_circ(self, c: Circuit) -> Circuit:
-        if not self.arch == None:
-            return route(c, self.arch)
-        #routedCirc.flatten_registers() Need to figure out why this was here.
-        #EDIT: I think it was here precisely because I couldn't feed routed
-        #pytket circuits back to pyzx without flattening the qubits. I'll 
-        #revise this entire method when I work on routing later, for now just
-        #ignore this.
-        else:
-            return c
 
     def remove_redundant(self, g: GraphS, io_map: dict) -> None:
         """
@@ -531,10 +804,9 @@ class MPattern:
                                 break
                         if not isClifford:
                             new_c.add_barrier(list(g.vertices()),list(g.vertices()))
-                        for v in reset_list:
-                            #Add command to reset qubit 'v'
-                            pass
-                        reset_list = []
+                            for v in reset_list:
+                                new_c.add_gate(OpType.Reset, [v])
+                            reset_list = []
                     for v in l_list[-1-corr_layer]:
                         my_result = {v}
                         if g.phase(v) in {0,1/2,1,3/2}:
@@ -545,7 +817,7 @@ class MPattern:
                             my_result ^= {True}
                         for u in (gf[1][v] - {v}):
                             signals[u]["x"] ^= my_result
-                        for u in g.vertices():
+                        for u in g.vertices()-{v}:
                             Nu = set(g.neighbors(u))
                             if (len(Nu & gf[1][v])%2) == 1:
                                 signals[u]["z"] ^= my_result
@@ -586,8 +858,7 @@ class MPattern:
                 if len(l_list)>1:
                     new_c.add_barrier(list(g.vertices()),list(g.vertices()))
                 for v in reset_list:
-                    #Add command to reset qubit 'v'
-                    pass
+                    new_c.add_gate(OpType.Reset, [v])
                 for v in l_list[0]:
                     zi = False
                     for val in signals[v]["z"]:
