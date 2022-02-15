@@ -227,9 +227,8 @@ def test_routed_conversion() -> None:
     c1.T(2)
     c1.T(3)
     c1.X(1)
-    mp1 = MPattern(c1)
-    new_arch = SquareGrid(4,4)
-    (nc,nm) = mp1.routed_conversion(new_arch,3,"Depth")
+    #c1.rename_units({c1.qubits[0]:SquareGrid(3,3).nodes[4]})
+    (nc,nm) = MPattern(c1).routed_conversion(SquareGrid(3,3),3,"Depth","Sequential")
     """
     assert len(nc.get_commands()) == 55
     q = nc.qubits
