@@ -37,12 +37,12 @@ def test_zx_diagram() -> None:
     assert type(g1) == pyzx.graph.graph_s.GraphS
     assert len(g1.edge_set()) == 4
     assert io_map["i"][c1.qubits[0]] == 0
-    assert io_map["i"][c1.qubits[1]] in [4,5]
-    assert io_map["i"][c1.qubits[2]] in [1,2]
+    assert io_map["i"][c1.qubits[1]] in [3,4,5]
+    assert io_map["i"][c1.qubits[2]] in [1,2,4]
     assert io_map["i"][c1.qubits[3]] in [2,3]
     assert io_map["o"][c1.qubits[0]] in [1,2,3,4]
-    assert io_map["o"][c1.qubits[1]] in [4,5]
-    assert io_map["o"][c1.qubits[2]] in [1,2]
+    assert io_map["o"][c1.qubits[1]] in [3,4,5]
+    assert io_map["o"][c1.qubits[2]] in [1,2,4]
     assert io_map["o"][c1.qubits[3]] in [3,4,5]
     assert io_map["o"][c1.qubits[3]] > io_map["i"][c1.qubits[3]]
     assert not (io_map["o"][c1.qubits[0]] == io_map["i"][c1.qubits[2]])
@@ -73,7 +73,7 @@ def test_entangle() -> None:
     (g1,io_map) = mp1.zx_diagram()
     c2 = MPattern.entangle(g1)
     assert len(c2.qubits) == 6
-    assert len(c2.get_commands()) == 5
+    assert len(c2.get_commands()) == 4
     
 def test_single_conversion() -> None:
     c1 = Circuit(4)
@@ -85,23 +85,21 @@ def test_single_conversion() -> None:
     (c2,io_map) = mp1.single_conversion()
     assert len(c2.qubits) == 6
     assert len(c2.bits) == 8
-    assert len(c2.get_commands()) == 16
+    assert len(c2.get_commands()) == 14
     assert len(c2.get_commands()[0].args) == 2
     assert len(c2.get_commands()[1].args) == 2
     assert len(c2.get_commands()[2].args) == 2
-    assert len(c2.get_commands()[3].args) == 2
-    assert len(c2.get_commands()[4].args) == 12
-    assert len(c2.get_commands()[5].args) == 1
+    assert len(c2.get_commands()[3].args) == 1
+    assert len(c2.get_commands()[4].args) == 2
+    assert len(c2.get_commands()[5].args) == 2
     assert len(c2.get_commands()[6].args) == 1
     assert len(c2.get_commands()[7].args) == 2
-    assert len(c2.get_commands()[8].args) == 2
-    assert len(c2.get_commands()[9].args) == 10
-    assert len(c2.get_commands()[10].args) == 1
+    assert len(c2.get_commands()[8].args) == 1
+    assert len(c2.get_commands()[9].args) == 2
+    assert len(c2.get_commands()[10].args) == 2
     assert len(c2.get_commands()[11].args) == 1
-    assert len(c2.get_commands()[12].args) == 2
-    assert len(c2.get_commands()[13].args) == 3
-    assert len(c2.get_commands()[14].args) == 2
-    assert len(c2.get_commands()[15].args) == 2
+    assert len(c2.get_commands()[12].args) == 3
+    assert len(c2.get_commands()[13].args) == 2
     c = Circuit(0)
     qubits = [Qubit("a",0), Qubit("b",0), Qubit("b", 23), Qubit("a", 24), Qubit("c", 7), Qubit("d", 7)]
     for q in qubits:
@@ -116,20 +114,19 @@ def test_single_conversion() -> None:
     (c_,io_map_) = mp.single_conversion()
     assert len(c_.qubits) == 12
     assert len(c_.bits) == 22
-    assert len(c_.get_commands()) == 51
+    assert len(c_.get_commands()) == 49
     assert len(c_.get_commands()[0].args) == 2
-    assert len(c_.get_commands()[10].args) == 2
-    assert len(c_.get_commands()[11].args) == 24
-    assert len(c_.get_commands()[12].args) == 1
+    assert len(c_.get_commands()[9].args) == 2
+    assert len(c_.get_commands()[10].args) == 1
+    assert len(c_.get_commands()[13].args) == 2
+    assert len(c_.get_commands()[16].args) == 2
     assert len(c_.get_commands()[17].args) == 1
-    assert len(c_.get_commands()[18].args) == 2
-    assert len(c_.get_commands()[23].args) == 2
-    assert len(c_.get_commands()[24].args) == 24
-    assert len(c_.get_commands()[25].args) == 1
+    assert len(c_.get_commands()[22].args) == 2
+    assert len(c_.get_commands()[23].args) == 1
+    assert len(c_.get_commands()[28].args) == 3
+    assert len(c_.get_commands()[29].args) == 1
     assert len(c_.get_commands()[30].args) == 1
-    assert len(c_.get_commands()[31].args) == 2
-    assert len(c_.get_commands()[32].args) == 3
-    assert len(c_.get_commands()[50].args) == 2
+    assert len(c_.get_commands()[48].args) == 2
     
 def test_multi_conversion() -> None:
     c1 = Circuit(4)
@@ -195,7 +192,7 @@ def test_unrouted_conversion() -> None:
     c1.X(1)
     mp1 = MPattern(c1)
     (nc,nm) = mp1.unrouted_conversion(2,"Gates")
-    assert len(nc.get_commands()) == 55
+    assert len(nc.get_commands()) == 50
     q = nc.qubits
     i = nm["i"]
     o = nm["o"]
@@ -208,7 +205,7 @@ def test_unrouted_conversion() -> None:
     assert o[q[2]] == q[2]
     assert o[q[3]] == q[7]
     
-def test_routed_conversion() -> None:
+def test_routed_conversion_sequential() -> None:
     c1 = Circuit(4)
     c1.H(0)
     c1.CZ(0,1)
@@ -227,19 +224,53 @@ def test_routed_conversion() -> None:
     c1.T(2)
     c1.T(3)
     c1.X(1)
-    #c1.rename_units({c1.qubits[0]:SquareGrid(3,3).nodes[4]})
-    (nc,nm) = MPattern(c1).routed_conversion(SquareGrid(3,3),3,"Depth","Sequential")
-    """
-    assert len(nc.get_commands()) == 55
-    q = nc.qubits
-    i = nm["i"]
-    o = nm["o"]
-    assert i[q[0]] == q[5]
-    assert i[q[1]] == q[0]
-    assert i[q[2]] == q[1]
-    assert i[q[3]] == q[7]
-    assert o[q[0]] == q[6]
-    assert o[q[1]] == q[5]
-    assert o[q[2]] == q[2]
-    assert o[q[3]] == q[7]
-    """
+    sg = SquareGrid(3,3)
+    c1.rename_units({c1.qubits[0]:sg.nodes[4]})
+    (nc_seq,nm_seq) = MPattern(c1).routed_conversion(sg,3,"Depth","Sequential")
+    assert len(nc_seq.get_commands()) == 71
+    i = nm_seq["i"]
+    o = nm_seq["o"]
+    dummy_circ = Circuit(4)
+    assert i[sg.nodes[4]] == sg.nodes[4]
+    assert i[dummy_circ.qubits[1]] == sg.nodes[3]
+    assert i[dummy_circ.qubits[2]] == sg.nodes[2]
+    assert i[dummy_circ.qubits[3]] == sg.nodes[8]
+    assert o[sg.nodes[4]] == sg.nodes[6]
+    assert o[dummy_circ.qubits[1]] == sg.nodes[0]
+    assert o[dummy_circ.qubits[2]] == sg.nodes[4]
+    assert o[dummy_circ.qubits[3]] == sg.nodes[8]
+    
+def test_routed_conversion_separate() -> None:
+    c1 = Circuit(4)
+    c1.H(0)
+    c1.CZ(0,1)
+    c1.T(2)
+    c1.X(1)
+    c1.CX(0,2)
+    c1.H(2)
+    c1.T(2)
+    c1.CZ(2,1)
+    c1.CX(1,0)
+    c1.T(0)
+    c1.T(1)
+    c1.CZ(0,2)
+    c1.CZ(1,3)
+    c1.T(0)
+    c1.T(2)
+    c1.T(3)
+    c1.X(1)
+    sg = SquareGrid(3,3)
+    c1.rename_units({c1.qubits[0]:sg.nodes[4]})
+    (nc_sep,nm_sep) = MPattern(c1).routed_conversion(sg,3,"Depth","Separate")
+    assert len(nc_sep.get_commands()) == 76
+    i = nm_sep["i"]
+    o = nm_sep["o"]
+    dummy_circ = Circuit(4)
+    assert i[sg.nodes[4]] == sg.nodes[4]
+    assert i[dummy_circ.qubits[1]] == sg.nodes[3]
+    assert i[dummy_circ.qubits[2]] == sg.nodes[2]
+    assert i[dummy_circ.qubits[3]] == sg.nodes[8]
+    assert o[sg.nodes[4]] == sg.nodes[0]
+    assert o[dummy_circ.qubits[1]] == sg.nodes[2]
+    assert o[dummy_circ.qubits[2]] == sg.nodes[3]
+    assert o[dummy_circ.qubits[3]] == sg.nodes[5]

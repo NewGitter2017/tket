@@ -145,6 +145,24 @@ class MPattern:
         return output
         
     def unrouted_conversion(self, n: int = 1, splitStrat: str = "Gates") -> tuple:
+        """
+        Splits a pytket circuit into 'n' subcircuits, each subcircuit containing
+        either an approximately equal depth or an approximately equal number of
+        non-Clifford gates. Then converts each subcircuit to a measurement pattern,
+        extracts a new circuit from the measurement pattern, and joins them up
+        into a new circuit object. Returns a tuple containing the final circuit
+        and the dictionary mapping the inputs and outputs to the qubits of the 
+        original circuit.
+        
+        :param n:        Number of segments to attempt to split into.
+        :param type:     int
+        
+        :param strategy: Splitting strategy either by "Depth" or by "Gates".
+        :param type:     str
+        
+        :returns:        A tuple containing a circuit and an i/o map dictionary.
+        :rtype:          tuple(Circuit,dict)
+        """
         pattern_list = self.multi_conversion(n, splitStrat)
         new_c = Circuit()
         prev_map = {}
@@ -189,6 +207,30 @@ class MPattern:
         return (new_c,final_map)
     
     def routed_conversion(self, arch: Architecture = None, n: int = 1, splitStrat: str = "Gates", routeStrat: str = "Separate") -> tuple:
+        """
+        Converts a circuit into MBQC form by splitting it to 'n' segments, by depth
+        or by non-Clifford gates and turning each segment to a ZX diagram. Then, if no
+        architecture is given the ciruits are joined up in the fully connected setting,
+        otherwise, they are routed on the architecture using one of two possible
+        strategies. For each strategy ("Separate" or "Sequential") call the 
+        corresponding method. Finally returns a tuple containing the routed circuit
+        and the dictionary mapping the inputs/outputs to the original circuit.
+        
+        :param arch:       The architecture to route onto ("None" treated as "FullyConnected")
+        :param type:       Architecture
+        
+        :param n:          Number of segments to attempt to split into.
+        :param type:       int
+        
+        :param splitStrat: Splitting strategy either by "Depth" or by "Gates".
+        :param type:       str
+        
+        :param routeStrat: Routing strategy either by "Separate" or "Sequential".
+        :param type:       str
+        
+        :returns:          A tuple containing a circuit and an i/o map dictionary.
+        :rtype:            tuple(Circuit,dict)
+        """
         if (type(arch)==type(FullyConnected(0))) or (arch == None):
             return self.unrouted_conversion(n,splitStrat)
         else:
@@ -199,6 +241,24 @@ class MPattern:
                 return self.routed_conversion_sequential(pattern_list,arch)
         
     def routed_conversion_separate(self, pattern_list: list, arch: Architecture = None) -> tuple:
+        """
+        This method is given a list of tuples and an architecture as an input.
+        Each tuple contains a circuit and a dictionary mapping its inputs and outputs
+        to some original circuit qubits. This method routes each of the segments separately,
+        onto some given device architecture and then generates a network of SWAP gates
+        which also respect the architecture, to join each segment to the next one.
+        Finally returns a single tuple containing the resulting Circuit object and
+        the dictionary of the final i/o map.
+        
+        :param pattern_list: A list of tuples containing circuits and i/o maps.
+        :param type:         list(tuple(Circuit,dict))
+        
+        :param arch:         The architecture to route onto.
+        :param type:         Architecture
+        
+        :returns:            A tuple containing a circuit and an i/o map dictionary.
+        :rtype:              tuple(Circuit,dict)
+        """
         new_c = Circuit()
         for q in arch.nodes:
             new_c.add_qubit(q)
@@ -273,6 +333,26 @@ class MPattern:
         return (new_c,final_map)
     
     def routed_conversion_sequential(self, pattern_list: list, arch: Architecture = None) -> tuple:
+        """
+        This method is given a list of tuples and an architecture as an input.
+        Each tuple contains a circuit and a dictionary mapping its inputs and outputs
+        to some original circuit qubits. This method routes each of the segments on the device
+        and then sets the inputs of the next segment onto the outputs of the current segment.
+        This ensures that each routed segment can be directly added to the preceding one
+        while automatically maintaining logical continuity. Finally returns a single
+        tuple containing the resulting Circuit object and the dictionary of the final
+        i/o map.
+        
+        :param pattern_list: A list of tuples containing circuits and i/o maps.
+        :param type:         list(tuple(Circuit,dict))
+        
+        :param arch:         The architecture to route onto.
+        :param type:         Architecture
+        
+        :returns:            A tuple containing a circuit and an i/o map dictionary.
+        :rtype:              tuple(Circuit,dict)
+        """
+        
         new_c = Circuit()
         for q in arch.nodes:
             new_c.add_qubit(q)
