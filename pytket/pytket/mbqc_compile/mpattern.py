@@ -25,6 +25,8 @@ from pytket.placement import place_with_map
 import math
 from pytket.passes import DefaultMappingPass, RoutingPass
 from pytket.predicates import CompilationUnit
+import numpy as np
+import time
 """
 
 """
@@ -258,31 +260,54 @@ class MPattern:
         
         :returns:            A tuple containing a circuit and an i/o map dictionary.
         :rtype:              tuple(Circuit,dict)
-        """
+        """        
         new_c = Circuit()
         for q in arch.nodes:
             new_c.add_qubit(q)
         for p in range(len(pattern_list)):
+            #print("Segment: ",p)
+            #time.sleep(5)
             (curr_circ,curr_map) = pattern_list[p]
             route_map = {}
             if p==0:
                 for k in curr_map["i"].keys():
                     if k in arch.nodes:
-                        route_map[curr_circ.qubits[curr_map["i"][k]]] = k
+                        temp_val = curr_map["i"][k]
+                        route_map[curr_circ.qubits[temp_val]] = k
                         curr_map["i"][k] = k
+                        if curr_map["o"][k] == temp_val:
+                            curr_map["o"][k] = k
+                        else:
+                            curr_map["o"][k] = curr_circ.qubits[curr_map["o"][k]]
                     else:
                         curr_map["i"][k] = curr_circ.qubits[curr_map["i"][k]]
-                    curr_map["o"][k] = curr_circ.qubits[curr_map["o"][k]]
-                    curr_circ.rename_units(route_map)
+                        curr_map["o"][k] = curr_circ.qubits[curr_map["o"][k]]
+                curr_circ.rename_units(route_map)
             else:
                 for k in curr_map["i"].keys():
                     curr_map["i"][k] = curr_circ.qubits[curr_map["i"][k]]
                     curr_map["o"][k] = curr_circ.qubits[curr_map["o"][k]]
+            #print(curr_map)
+            #print("   Before CompilationUnit")
+            #time.sleep(5)
+            #print(curr_circ.to_dict())
+            #print("BEFORE_______________________________")
+            #print(curr_circ.qubits)
             cu = CompilationUnit(curr_circ)
+            #print("   Before RoutingPass")
+            #time.sleep(5)
             RoutingPass(arch).apply(cu)
+            #print("AFTER________________________________")
+            #print(cu.circuit.qubits)
+            #print(cu.initial_map)
+            #print(cu.final_map)
+            #print("_____________________________________")
+            #print("   After RoutingPass")
+            #time.sleep(5)
             used_nodes = set()
             all_nodes = set(arch.nodes)
             unassigned_qubits = []
+            print(curr_map["i"])
             for k in curr_map["i"].keys():
                 if cu.initial_map[curr_map["i"][k]] in all_nodes:
                     used_nodes |= {cu.initial_map[curr_map["i"][k]]}
@@ -297,10 +322,16 @@ class MPattern:
                         if q in used_nodes:
                             used_nodes |= qubits
                             break
-                if command.op.get_name()=="SWAP":
+                elif command.op.get_name()=="SWAP":
                     qubits = command.qubits
                     if ((qubits[0] in used_nodes) and not (qubits[1] in used_nodes)) or (not (qubits[0] in used_nodes) and (qubits[1] in used_nodes)):
                         used_nodes ^= set(qubits)
+                elif command.op.get_name()=="BRIDGE":
+                    qubits = command.qubits
+                    for q in {qubits[0],qubits[2]}:
+                        if q in used_nodes:
+                            used_nodes |= {qubits[0],qubits[2]}
+                            break
             permutation = {x:x for x in all_nodes}
             for com in cu.circuit.commands_of_type(OpType.SWAP):
                 permutation[com.qubits[0]] = com.qubits[1]
@@ -319,7 +350,7 @@ class MPattern:
             pattern_list[p] = new_tuple
             for q in arch.nodes:
                 if not q in segment_circuit.qubits:
-                    segment_circuit.add_qubit(q)          
+                    segment_circuit.add_qubit(q) 
             if p>0:
                 prev_map = pattern_list[p-1][1]
                 matching_dict = {}
@@ -391,12 +422,17 @@ class MPattern:
                 route_map = {}
                 for k in curr_map["i"].keys():
                     if k in arch.nodes:
-                        route_map[curr_circ.qubits[curr_map["i"][k]]] = k
+                        temp_val = curr_map["i"][k]
+                        route_map[curr_circ.qubits[temp_val]] = k
                         curr_map["i"][k] = k
+                        if curr_map["o"][k] == temp_val:
+                            curr_map["o"][k] = k
+                        else:
+                            curr_map["o"][k] = curr_circ.qubits[curr_map["o"][k]]
                     else:
                         curr_map["i"][k] = curr_circ.qubits[curr_map["i"][k]]
-                    curr_map["o"][k] = curr_circ.qubits[curr_map["o"][k]]
-                    curr_circ.rename_units(route_map)    
+                        curr_map["o"][k] = curr_circ.qubits[curr_map["o"][k]]
+                curr_circ.rename_units(route_map)
             cu = CompilationUnit(curr_circ)
             RoutingPass(arch).apply(cu)
             used_nodes = set()
@@ -416,10 +452,16 @@ class MPattern:
                         if q in used_nodes:
                             used_nodes |= qubits
                             break
-                if command.op.get_name()=="SWAP":
+                elif command.op.get_name()=="SWAP":
                     qubits = command.qubits
                     if ((qubits[0] in used_nodes) and not (qubits[1] in used_nodes)) or (not (qubits[0] in used_nodes) and (qubits[1] in used_nodes)):
                         used_nodes ^= set(qubits)
+                elif command.op.get_name()=="BRIDGE":
+                    qubits = command.qubits
+                    for q in {qubits[0],qubits[2]}:
+                        if q in used_nodes:
+                            used_nodes |= {qubits[0],qubits[2]}
+                            break
             permutation = {x:x for x in all_nodes}
             for com in cu.circuit.commands_of_type(OpType.SWAP):
                 permutation[com.qubits[0]] = com.qubits[1]
@@ -442,13 +484,30 @@ class MPattern:
             new_c.add_circuit(segment_circuit,[])
         final_map = {"i":pattern_list[0][1]["i"],"o":pattern_list[-1][1]["o"]}
         return (new_c,final_map)
+    
+    @staticmethod
+    def count_nCliffords(c: Circuit) -> int:
+        """
+        Returns number of non-Clifford gates in a circuit.
         
+        :param c:        Circuit to check.
+        :param type:     Circuit
+        
+        :returns:        The number of non-Clifford gates.
+        :rtype:          int
+        """
+        count = 0
+        for g in c.get_commands():
+            if MPattern.is_Clifford(g):
+                count += 1
+        return count
+    
     @staticmethod
     def is_Clifford(aGate: Command) -> bool:
         """
-        Placeholder method which checks if a gate is Clifford or not.
+        Check if a gate is Clifford.
         
-        :param n:        Number of segments to attempt to split into (May return fewer).
+        :param aGate:    Command to check.
         :param type:     Command
         
         :returns:        The result of the check.
@@ -463,6 +522,45 @@ class MPattern:
                 return True
         else:
             return False
+        
+    def is_worthwhile(self, improveOn: str = "Depth", maxWidth: int = None, maxDepth: int = None, strictness = 0.5) -> bool:
+        #Numerical averages extracted from random Clifford+T circuit samples.
+        #gw ~= 2.56cw + 1.1t
+        #gd ~= 13.9 + 0.51gw − 0.37cw
+        
+        #hw(n) ~= (2.56cw + 1.1t/n)*1.1
+        #hd(n) ~= n*(13.9 + 0.51hw(n)/1.1 - 0.37cw)
+        
+        cw = self.c.n_qubits
+        cd = self.c.depth()
+        t = MPattern.count_nCliffords(self.c)
+        n = np.array(range(1,cd))
+        hw = (2.56*cw + 1.1*t/n)*1.1
+        hd = n*(13.9 + 0.51*hw/1.1 - 0.37*cw)
+        result_array = np.vstack((n,hw,hd,hw*hd))
+        delete_columns = set()
+        if not (maxWidth == None):
+            for i in range(result_array.shape[1]):
+                if result_array[1,i]*strictness > maxWidth:
+                    delete_columns |= {i}
+        if not (maxDepth == None):
+            for i in range(result_array.shape[1]):
+                if result_array[2,i]*strictness > maxDepth:
+                    delete_columns |= {i}
+        keep_columns = set(n-1) - delete_columns
+        interesting_row = 2
+        if improveOn == "Width":
+            interesting_row = 1
+        if improveOn == "Depth":
+            interesting_row = 2
+        elif improveOn == "Both":
+            interesting_row = 3
+        benchmarks = [None,cw,cd,cw*cd]
+        for c in keep_columns:
+            if result_array[interesting_row,c]*strictness < benchmarks[interesting_row]:
+                return True
+        return False
+        
     
     def depth_structure(self) -> list:
         """
@@ -561,6 +659,8 @@ class MPattern:
         dlist = []
         for v in vlist:
             dlist.append(len(g.neighbors(v)))
+            if not v in g.inputs:
+                c.H(v)
         vlist = [x for _, x in sorted(zip(dlist, vlist))]
         vlist.reverse()
         edge_pool = set(g.edge_set())
@@ -601,11 +701,13 @@ class MPattern:
                     finished_edge_pool[v] = 0
             vlist = [x for _, x in sorted(zip(dlist, vlist))]
             vlist.reverse()
-        #active_vertices = []
-        #for v in g.vertices():
-        #    if len(g.neighbors(v))>0:
-        #        active_vertices.append(v)
-        #c.add_barrier(active_vertices, active_vertices)
+        """
+        active_vertices = []
+        for v in g.vertices():
+            if len(g.neighbors(v))>0:
+                active_vertices.append(v)
+        c.add_barrier(active_vertices, active_vertices)
+        """
         return c
 
     def remove_redundant(self, g: GraphS, io_map: dict) -> None:
@@ -809,7 +911,7 @@ class MPattern:
                                 isClifford = False
                                 break
                         if not isClifford:
-                            #new_c.add_barrier(list(g.vertices()),list(g.vertices()))
+                            new_c.add_barrier(list(g.vertices()),list(g.vertices()))
                             for v in reset_list:
                                 new_c.add_gate(OpType.Reset, [v])
                             reset_list = []
@@ -862,7 +964,7 @@ class MPattern:
                         new_c.Measure(v,v)
                         reset_list.append(v)
                 if len(l_list)>1:
-                    #new_c.add_barrier(list(g.vertices()),list(g.vertices()))
+                    new_c.add_barrier(list(g.vertices()),list(g.vertices()))
                     pass
                 for v in reset_list:
                     new_c.add_gate(OpType.Reset, [v])
