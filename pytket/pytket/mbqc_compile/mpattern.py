@@ -21,9 +21,8 @@ from pyzx.graph.graph_s import GraphS
 from pyzx.circuit.graphparser import circuit_to_graph
 from pyzx.gflow import gflow
 from pytket.architecture import Architecture, SquareGrid, FullyConnected
-from pytket.placement import place_with_map
 import math
-from pytket.passes import DefaultMappingPass, RoutingPass
+from pytket.passes import RoutingPass
 from pytket.predicates import CompilationUnit
 import numpy as np
 import time
@@ -71,11 +70,13 @@ class MPattern:
         extracts a new circuit from the measurement pattern, and ultimately
         returns a list of tuples containing the new circuits and the dictionaries
         mapping the inputs and outputs of the new circuits to the original.
+        There is also a third splitting strategy which only converts the Clifford
+        parts of a circuit to MBQC.
         
         :param n:        Number of segments to attempt to split into (May return fewer).
         :param type:     int
         
-        :param strategy: Splitting strategy either by "Depth" or by "Gates".
+        :param strategy: Splitting strategy either by "Depth", by "Gates" or only convert "Clifford" segments.
         :param type:     str
         
         :returns:        A list of tuples containing circuits and i/o maps.
@@ -144,6 +145,52 @@ class MPattern:
                     break
                 else:
                     done_depth += added_depths
+        elif strategy == "Clifford":
+            if size > 0:
+                clifford_circ = True
+                for gate in depth_structure[0]:
+                    if not MPattern.is_Clifford(gate):
+                        clifford_circ = False
+                        break
+                while done_depth < size:
+                    subcircuit = Circuit()
+                    for qubit in self.c.qubits:
+                        subcircuit.add_qubit(qubit)
+                    for bit in self.c.bits:
+                        subcircuit.add_bit(bit)
+                    for depth_list in depth_structure[done_depth:size]:
+                        has_non_clifford = False
+                        for gate in depth_list:
+                            if not MPattern.is_Clifford(gate):
+                                has_non_clifford = True
+                                break
+                        if has_non_clifford == clifford_circ:
+                            if clifford_circ:
+                                sub_pattern = MPattern(subcircuit)
+                                output.append(sub_pattern.single_conversion())
+                            else:
+                                new_map = {"i":{},"o":{}}
+                                for qubit in subcircuit.qubits:
+                                    new_map["i"][qubit] = subcircuit.qubits.index(qubit)
+                                    new_map["o"][qubit] = subcircuit.qubits.index(qubit)
+                                new_tuple = (subcircuit.copy(),new_map)
+                                output.append(new_tuple)
+                            clifford_circ = not clifford_circ
+                            break
+                        else:
+                            done_depth += 1
+                            for gate in depth_list:
+                                subcircuit.add_gate(Op=gate.op, args=gate.args)
+                if clifford_circ:
+                    sub_pattern = MPattern(subcircuit)
+                    output.append(sub_pattern.single_conversion())
+                else:
+                    new_map = {"i":{},"o":{}}
+                    for qubit in subcircuit.qubits:
+                        new_map["i"][qubit] = subcircuit.qubits.index(qubit)
+                        new_map["o"][qubit] = subcircuit.qubits.index(qubit)
+                    new_tuple = (subcircuit.copy(),new_map)
+                    output.append(new_tuple)
         return output
         
     def unrouted_conversion(self, n: int = 1, splitStrat: str = "Gates") -> tuple:
@@ -198,6 +245,11 @@ class MPattern:
                 for k in curr_map["o"].keys():
                     curr_map["o"][k] = q_map[curr_circ.qubits[curr_map["o"][k]]]
                 curr_circ.rename_units(q_map)
+                prev_bits = len(new_c.bits)
+                b_map = {}
+                for b in range(len(curr_circ.bits)):
+                    b_map[curr_circ.bits[b]] = Bit(prev_bits + b)
+                curr_circ.rename_units(b_map)
                 new_c.add_circuit(curr_circ,[])
                 for k in curr_map["o"].keys():
                     curr_map["o"][k] = new_c.qubits.index(curr_map["o"][k])
@@ -265,8 +317,6 @@ class MPattern:
         for q in arch.nodes:
             new_c.add_qubit(q)
         for p in range(len(pattern_list)):
-            #print("Segment: ",p)
-            #time.sleep(5)
             (curr_circ,curr_map) = pattern_list[p]
             route_map = {}
             if p==0:
@@ -287,30 +337,15 @@ class MPattern:
                 for k in curr_map["i"].keys():
                     curr_map["i"][k] = curr_circ.qubits[curr_map["i"][k]]
                     curr_map["o"][k] = curr_circ.qubits[curr_map["o"][k]]
-            #print(curr_map)
-            #print("   Before CompilationUnit")
-            #time.sleep(5)
-            #print(curr_circ.to_dict())
-            #print("BEFORE_______________________________")
-            #print(curr_circ.qubits)
             cu = CompilationUnit(curr_circ)
-            #print("   Before RoutingPass")
-            #time.sleep(5)
             RoutingPass(arch).apply(cu)
-            #print("AFTER________________________________")
-            #print(cu.circuit.qubits)
-            #print(cu.initial_map)
-            #print(cu.final_map)
-            #print("_____________________________________")
-            #print("   After RoutingPass")
-            #time.sleep(5)
             used_nodes = set()
             all_nodes = set(arch.nodes)
             unassigned_qubits = []
-            print(curr_map["i"])
             for k in curr_map["i"].keys():
                 if cu.initial_map[curr_map["i"][k]] in all_nodes:
                     used_nodes |= {cu.initial_map[curr_map["i"][k]]}
+                    used_nodes |= {cu.initial_map[curr_map["o"][k]]}
                     curr_map["i"][k] = cu.initial_map[curr_map["i"][k]]
                     curr_map["o"][k] = cu.final_map[curr_map["o"][k]]
                 else:
@@ -358,7 +393,12 @@ class MPattern:
                     matching_dict[prev_map["o"][k]]=curr_map["i"][k]
                 swaps_as_pairs = get_token_swapping_network(arch, matching_dict)
                 for pair in swaps_as_pairs:
-                    new_c.SWAP(qubit_0=pair[0],qubit_1=pair[1])                
+                    new_c.SWAP(qubit_0=pair[0],qubit_1=pair[1])
+            prev_bits = len(new_c.bits)
+            b_map = {}
+            for b in range(len(segment_circuit.bits)):
+                b_map[segment_circuit.bits[b]] = Bit(prev_bits + b)
+            segment_circuit.rename_units(b_map)
             new_c.add_circuit(segment_circuit,[])
         final_map = {"i":pattern_list[0][1]["i"],"o":pattern_list[-1][1]["o"]}
         return (new_c,final_map)
@@ -393,8 +433,14 @@ class MPattern:
                 (prev_circ,prev_map) = pattern_list[p-1]
                 route_map = {}
                 for k in curr_map["i"].keys():
+                    if curr_map["o"][k] == curr_map["i"][k]:
+                        curr_map["o"][k] = prev_map["o"][k]
+                    else:
+                        curr_map["o"][k] = curr_circ.qubits[curr_map["o"][k]]
                     route_map[curr_circ.qubits[curr_map["i"][k]]]=prev_map["o"][k]
                     curr_map["i"][k] = prev_map["o"][k]
+                curr_circ.rename_units(route_map)
+                """
                 output_list = [curr_circ.qubits[q] for q in list(curr_map["o"].values())]
                 already_placed = 0
                 unplaced_qubit_map = {}
@@ -418,6 +464,7 @@ class MPattern:
                 place_with_map(curr_circ,route_map)
                 for unplaced_qubit in unplaced_qubit_map.keys():
                     curr_map["o"][unplaced_qubit]=curr_circ.qubits[unplaced_qubit_map[unplaced_qubit]]  
+                """
             else:
                 route_map = {}
                 for k in curr_map["i"].keys():
@@ -441,6 +488,7 @@ class MPattern:
             for k in curr_map["i"].keys():
                 if cu.initial_map[curr_map["i"][k]] in all_nodes:
                     used_nodes |= {cu.initial_map[curr_map["i"][k]]}
+                    used_nodes |= {cu.initial_map[curr_map["o"][k]]}
                     curr_map["i"][k] = cu.initial_map[curr_map["i"][k]]
                     curr_map["o"][k] = cu.final_map[curr_map["o"][k]]
                 else:
@@ -481,6 +529,11 @@ class MPattern:
             for q in arch.nodes:
                 if not q in segment_circuit.qubits:
                     segment_circuit.add_qubit(q)
+            prev_bits = len(new_c.bits)
+            b_map = {}
+            for b in range(len(segment_circuit.bits)):
+                b_map[segment_circuit.bits[b]] = Bit(prev_bits + b)
+            segment_circuit.rename_units(b_map)
             new_c.add_circuit(segment_circuit,[])
         final_map = {"i":pattern_list[0][1]["i"],"o":pattern_list[-1][1]["o"]}
         return (new_c,final_map)
@@ -524,6 +577,25 @@ class MPattern:
             return False
         
     def is_worthwhile(self, improveOn: str = "Depth", maxWidth: int = None, maxDepth: int = None, strictness = 0.5) -> bool:
+        """
+        Check if a circuit is worth converting to MBQC.
+        
+        :param improveOn:    The resource we want to lower - can be "Depth", "Width" or "Both".
+        :param type:         str
+        
+        :param maxWidth:     Provide an upper limit to the width of the new circuit. If exceeded, disregard the new circuit entirely.
+        :param type:         int
+        
+        :param maxDepth:     Provide an upper limit to the depth of the new circuit. If exceeded, disregard the new circuit entirely.
+        :param type:         int
+        
+        :param strictness:   Parameter to control how strictly predicted circuits are evaluated.
+        :param type:         float
+        
+        :returns:            Returns true if there is at least one expected circuit which meets the specifications.
+        :rtype:              bool
+        """
+        
         #Numerical averages extracted from random Clifford+T circuit samples.
         #gw ~= 2.56cw + 1.1t
         #gd ~= 13.9 + 0.51gw − 0.37cw
@@ -701,6 +773,7 @@ class MPattern:
                     finished_edge_pool[v] = 0
             vlist = [x for _, x in sorted(zip(dlist, vlist))]
             vlist.reverse()
+        #The following code is to be uncommented if we want barriers in the circuit.
         """
         active_vertices = []
         for v in g.vertices():
@@ -911,7 +984,8 @@ class MPattern:
                                 isClifford = False
                                 break
                         if not isClifford:
-                            new_c.add_barrier(list(g.vertices()),list(g.vertices()))
+                            #Uncomment the following command for barriers between layers.
+                            #new_c.add_barrier(list(g.vertices()),list(g.vertices()))
                             for v in reset_list:
                                 new_c.add_gate(OpType.Reset, [v])
                             reset_list = []
@@ -963,9 +1037,9 @@ class MPattern:
                                 new_c.Rx(-g.phase(v),v, condition=(xi^True))
                         new_c.Measure(v,v)
                         reset_list.append(v)
-                if len(l_list)>1:
-                    new_c.add_barrier(list(g.vertices()),list(g.vertices()))
-                    pass
+                #Uncomment the following two commands for barriers.
+                #if len(l_list)>1:
+                    #new_c.add_barrier(list(g.vertices()),list(g.vertices()))
                 for v in reset_list:
                     new_c.add_gate(OpType.Reset, [v])
                 for v in l_list[0]:
